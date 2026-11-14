@@ -1,24 +1,19 @@
-LEITOR BILÍNGUE — V3 DIAGNÓSTICO — 14/11/2026
+Leitor Bilíngue V3.1 — Correção experimental para Safari (14/11/2026)
 
-Esta versão é somente um diagnóstico para a V3 experimental que permanece parada
-em "Testando Bergamot" no Safari. Não substitua os arquivos da raiz do repositório.
+Esta pasta é PARA TESTE. Envie a pasta inteira v3-teste ao diretório raiz do repositório leitor-bilingue.
+Confirme que aparece v3-teste/index.html (e não index.html sozinho).
 
-Altere APENAS os arquivos dentro de v3-teste/ no GitHub, mantendo o mesmo caminho.
-O botão "Testar tradutor" deve informar:
- - Etapa 1/3: carregando biblioteca Bergamot
- - Etapa 2/3: criando mecanismo
- - Etapa 3/3: carregando modelos e traduzindo
+A versão 2 na raiz permanece intacta.
 
-Se uma etapa não responder, exibirá o erro ou excederá tempo de espera.
-Os tempos usados são limites de diagnóstico, não limites de uso.
-A versão pode continuar sem traduzir: a função do pacote é localizar o bloqueio.
-Não foi validado em Safari/iPhone. Não faz chamadas ao MyMemory.
+No Safari, abra /leitor-bilingue/v3-teste/ e atualize.
+Sem abrir PDF, pressione Testar tradutor; veja a mensagem de progresso.
+A primeira tradução baixa JS, WASM e modelos es->en->pt; pode usar muita memória e dados.
+Tradução local não tem cota diária do MyMemory. Não garante compatibilidade/velocidade no iPhone.
 
-URL (após o GitHub Pages publicar):
-https://lucascortezbh-png.github.io/leitor-bilingue/v3-teste/
+O que foi alterado:
+- Service Worker com escopo restrito à v3-teste, que obtém os arquivos oficiais de @browsermt/bergamot-translator 0.4.9 e os disponibiliza sob o mesmo domínio.
+- Importação do Bergamot pelo próprio domínio, incluindo o Web Worker e o WASM.
+- Erros do Worker chegam à interface; cada etapa tem limite de tempo.
+- Sem necessidade de alterar o código da V2 ou habilitar API paga.
 
-Após carregar no Safari, sem abrir PDF, toque em "Testar tradutor" e informe
-qual etapa é exibida ou envie uma captura da mensagem.
-
-IMPORTANTE: Este pacote NÃO contém os modelos de tradução ou o motor WASM.
-Eles são buscados online, e um navegador pode bloquear o carregamento.
+Limitação: arquivos JS/WASM vêm de CDN público e os modelos de servidores Bergamot. Se o Safari, a rede, a CDN ou os modelos falharem, o teste exibirá erro. Não validado em iPhone real.

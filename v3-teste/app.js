@@ -1,4 +1,4 @@
-import {createLocalTranslator} from './engine.js';
+import {createLocalTranslator} from './engine.js?v=sw1';
 const $=id=>document.getElementById(id);
 const original=$('original'),translated=$('translation'),status=$('status');
 const fileEl=$('pdfFile'),pageNum=$('pageNum');
@@ -18,6 +18,21 @@ async function showPage(n){if(!pdf||busy||n<1||n>pages)return;const tok=session;
 function renderSegments(n,texts,mode,job){original.replaceChildren();translated.replaceChildren();original.append(el('div','mark',`PÁGINA ${n} · ${mode}`));translated.append(el('div','mark',`PÁGINA ${n}`));if(!texts.length){original.append(el('p','empty','Nenhum texto encontrado.'));translated.append(el('p','empty','Sem tradução.'));return;}for(let i=0;i<texts.length;i++){const a=el('p','segment',texts[i]);const b=el('p','segment pending','Aguardando tradução local…');a.dataset.index=String(i);b.dataset.index=String(i);original.append(a);translated.append(b);}original.scrollTop=0;translated.scrollTop=0;}
 async function translateSegments(texts,job,tok){setStatus(`Carregando tradução local · ${texts.length} trechos. Primeira vez pode levar mais tempo…`);let engine;try{engine=await createLocalTranslator(stage=>{if(job===translationJob&&session===tok)setStatus('Tradutor local: '+stage)});}catch(err){if(job===translationJob&&session===tok){for(const p of translated.querySelectorAll('.segment')){p.textContent='Tradutor local não carregou.';p.className='segment failed';}setStatus('Bergamot indisponível: '+(err.message||String(err)));}return;}for(let i=0;i<texts.length;i++){if(job!==translationJob||tok!==session)return;const b=translated.querySelector(`p.segment[data-index="${i}"]`);if(!b)continue;const key='es-pt:'+texts[i];try{b.textContent='Traduzindo localmente…';let result=engineCache.get(key);if(!result){result=await engine.translate(texts[i]);engineCache.set(key,result);if(engineCache.size>250)engineCache.delete(engineCache.keys().next().value);}if(job!==translationJob||tok!==session)return;b.textContent=result;b.className='segment';setStatus(`Página ${current}/${pages} · traduzidos ${i+1} de ${texts.length} trechos · sem MyMemory`);}catch(err){if(job!==translationJob||tok!==session)return;b.textContent='Erro de tradução local: '+(err?.message||'erro desconhecido');b.className='segment failed';setStatus('O tradutor local falhou. Não foi usado serviço remoto.');break;}await new Promise(r=>setTimeout(r,0));}}
 fileEl.addEventListener('change',e=>{const f=e.target.files?.[0];if(f)openFile(f);});btnNext.onclick=()=>showPage(current+1);btnPrev.onclick=()=>showPage(current-1);btnGo.onclick=()=>{const n=Number(pageNum.value);if(Number.isInteger(n))showPage(n);};
-$('testEngine').onclick=async()=>{const button=$('testEngine'),label=$('teststatus');button.disabled=true;label.textContent='Testando Bergamot com espanhol → português…';try{const engine=await createLocalTranslator(stage=>{if(job===translationJob&&session===tok)setStatus('Tradutor local: '+stage)});const result=await engine.translate('La arquitectura y el urbanismo estudian las ciudades.');label.textContent='Resultado local: '+result;setStatus('Motor respondeu ao teste. Abra um PDF para conferir OCR + tradução.');}catch(e){label.textContent='O teste do motor falhou: '+(e?.message||String(e));setStatus('A versão experimental precisa de ajuste para este navegador.');}finally{button.disabled=false;}};
+$('testEngine').onclick=async()=>{
+ const button=$('testEngine'),label=$('teststatus');
+ button.disabled=true;
+ const progress=stage=>{label.textContent='Diagnóstico: '+stage;setStatus('Bergamot: '+stage);};
+ progress('iniciando teste espanhol → português…');
+ try{
+   const engine=await createLocalTranslator(progress);
+   progress('Biblioteca carregada; baixando modelos e traduzindo a frase…');
+   const result=await engine.translate('La arquitectura y el urbanismo estudian las ciudades.');
+   label.textContent='Tradução concluída: '+result;
+   setStatus('Bergamot respondeu ao teste. Agora podemos avaliar a tradução do PDF.');
+ }catch(e){
+   label.textContent='Falha no teste Bergamot: '+(e?.message||String(e));
+   setStatus('Bergamot não completou o teste; a versão 2 continua independente.');
+ }finally{button.disabled=false;}
+};
 let syncing=false;function bindScroll(a,b){a.addEventListener('scroll',()=>{if(syncing)return;const denom=Math.max(1,a.scrollHeight-a.clientHeight),targetMax=Math.max(0,b.scrollHeight-b.clientHeight);syncing=true;b.scrollTop=a.scrollTop/denom*targetMax;setTimeout(()=>syncing=false,35);},{passive:true});}bindScroll(original,translated);bindScroll(translated,original);
 navigation();
