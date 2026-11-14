@@ -1,4 +1,4 @@
-// Leitor Bilíngue 3.4 — rolagem contínua com janela de páginas.
+// Leitor Bilíngue 3.5 — rolagem contínua estável; gestos controlam a sincronização.
 // Mantém o motor Bergamot da 3.3, OCR por página e arquivos locais em vendor/.
 import {createLocalTranslator} from './engine.js?v=local3';
 const $ = id => document.getElementById(id);
@@ -8,6 +8,39 @@ const btnPrev=$('prev'),btnNext=$('next'),btnGo=$('go');
 const SOURCE='spa',MAX_PAGES_IN_VIEW=5,EDGE=290;
 let pdf=null,totalPages=0,current=0,opening=false,session=0,viewEpoch=0,loading=false,ocrWorker=null;
 let userRequestedPage=false,initialFillCount=0,autoLoadArmed=false,activePane=original;
+// Eventos de scroll disparados por ajustes feitos pelo aplicativo não são gestos.
+const silentScrollTargets=new WeakMap();
+function setScrollWithoutFeedback(p,position){
+ const limit=Math.max(0,p.scrollHeight-p.clientHeight);
+ const target=Math.max(0,Math.min(limit,position));
+ if(Math.abs(p.scrollTop-target)<0.5)return;
+ silentScrollTargets.set(p,target);
+ p.scrollTop=target;
+}
+function consumeSilentScroll(p){
+ if(!silentScrollTargets.has(p))return false;
+ const target=silentScrollTargets.get(p);
+ silentScrollTargets.delete(p);
+ return Math.abs(p.scrollTop-target)<2;
+}
+function topTextAnchor(p){
+ const bounds=p.getBoundingClientRect(),cut=bounds.top+12;
+ for(const node of p.querySelectorAll('.mark, .segment, .empty')){
+  const r=node.getBoundingClientRect();
+  if(r.bottom>cut&&r.top<bounds.bottom)return {node,top:r.top};
+ }
+ return null;
+}
+function setTranslatedText(node,value,css){
+ // Preserva a posição do trecho já visível quando uma tradução anterior cresce.
+ const anchor=topTextAnchor(translated);
+ node.textContent=value;
+ if(css)node.className=css;
+ if(anchor&&anchor.node.isConnected){
+  const displacement=anchor.node.getBoundingClientRect().top-anchor.top;
+  if(Math.abs(displacement)>1)setScrollWithoutFeedback(translated,translated.scrollTop+displacement);
+ }
+}
 const pageBlocks=new Map(),translationCache=new Map();
 let translationQueue=[],translating=false;
 const setStatus=msg=>{status.textContent=msg;};
@@ -82,7 +115,7 @@ function resetText(){
  pageBlocks.clear();translationQueue=[];
  original.replaceChildren(el('p','empty','Carregando página…'));
  translated.replaceChildren(el('p','empty','Preparando tradução…'));
- original.scrollTop=0;translated.scrollTop=0;
+ activePane=original;setScrollWithoutFeedback(original,0);setScrollWithoutFeedback(translated,0);
  initialFillCount=0;autoLoadArmed=false;
 }
 function pageNodes(n,texts,mode){
@@ -113,8 +146,8 @@ function trimPages(direction){
   const wasAbove=direction!=='prepend';
   block.left.remove();block.right.remove();pageBlocks.delete(remove);
   if(wasAbove){
-   original.scrollTop=Math.max(0,oldLeftTop-(oldLeftHeight-original.scrollHeight));
-   translated.scrollTop=Math.max(0,oldRightTop-(oldRightHeight-translated.scrollHeight));
+   setScrollWithoutFeedback(original,Math.max(0,oldLeftTop-(oldLeftHeight-original.scrollHeight)));
+   setScrollWithoutFeedback(translated,Math.max(0,oldRightTop-(oldRightHeight-translated.scrollHeight)));
   }
  }
 }
@@ -126,8 +159,8 @@ function insertPage(block,direction){
   const oldLeftHeight=original.scrollHeight,oldRightHeight=translated.scrollHeight;
   const oldLeftTop=original.scrollTop,oldRightTop=translated.scrollTop;
   original.prepend(block.left);translated.prepend(block.right);
-  original.scrollTop=oldLeftTop+original.scrollHeight-oldLeftHeight;
-  translated.scrollTop=oldRightTop+translated.scrollHeight-oldRightHeight;
+  setScrollWithoutFeedback(original,oldLeftTop+original.scrollHeight-oldLeftHeight);
+  setScrollWithoutFeedback(translated,oldRightTop+translated.scrollHeight-oldRightHeight);
  }else{original.append(block.left);translated.append(block.right);}
  pageBlocks.set(block.n,block);
  trimPages(direction);
@@ -184,7 +217,7 @@ async function drainTranslationQueue(){
     });
    }catch(err){
     if(task.tok!==session||task.epoch!==viewEpoch)continue;
-    for(const p of task.block.outputs){p.textContent='Tradutor local não carregou.';p.className='segment failed';}
+    for(const p of task.block.outputs){setTranslatedText(p,'Tradutor local não carregou.','segment failed');}
     setStatus('Bergamot indisponível: '+(err?.message||String(err)));
     continue;
    }
@@ -192,7 +225,7 @@ async function drainTranslationQueue(){
     if(task.tok!==session||task.epoch!==viewEpoch||!pageBlocks.has(task.block.n))break;
     const p=task.block.outputs[i],text=task.block.texts[i],key='es-pt:'+text;
     try{
-     p.textContent='Traduzindo localmente…';
+     setTranslatedText(p,'Traduzindo localmente…');
      let result=translationCache.get(key);
      if(!result){
       result=await engine.translate(text);
@@ -200,13 +233,11 @@ async function drainTranslationQueue(){
       if(translationCache.size>250)translationCache.delete(translationCache.keys().next().value);
      }
      if(task.tok!==session||task.epoch!==viewEpoch||!pageBlocks.has(task.block.n))break;
-     p.textContent=result;p.className='segment';
+     setTranslatedText(p,result,'segment');
      setStatus(`Página ${task.block.n}/${totalPages}: ${i+1}/${task.block.texts.length} trechos traduzidos · sem MyMemory`);
-     requestAlignment();
     }catch(err){
      if(task.tok!==session||task.epoch!==viewEpoch)break;
-     p.textContent='Erro de tradução local: '+(err?.message||String(err));
-     p.className='segment failed';setStatus('O tradutor local falhou. Não foi usado serviço remoto.');
+     setTranslatedText(p,'Erro de tradução local: '+(err?.message||String(err)),'segment failed');setStatus('O tradutor local falhou. Não foi usado serviço remoto.');
      break;
     }
     await new Promise(r=>setTimeout(r,0));
@@ -257,11 +288,12 @@ $('testEngine').onclick=async()=>{
   setStatus('Bergamot não completou o teste; a versão 2 continua independente.');
  }finally{button.disabled=false;}
 };
-// Alinhamento por página: mantém a posição relativa mesmo quando os textos
-// original e traduzido ocupam alturas diferentes.
-let syncing=false,alignmentScheduled=false,edgeScheduled=false;
+// Sincronização unidirecional: somente a coluna escolhida por um gesto
+// pode mover a outra. Assim a tradução chegando de forma assíncrona não
+// aciona um scroll de volta, causando saltos ou movimento involuntário.
+let edgeScheduled=false;
 function alignPanes(from,to){
- if(syncing||!pageBlocks.size)return;
+ if(!pageBlocks.size)return;
  const nums=sortedPages();let chosen=nums[0];
  const point=from.scrollTop+14;
  for(const n of nums){
@@ -273,16 +305,7 @@ function alignPanes(from,to){
  const dest=to===original?block.left:block.right;
  const fraction=Math.min(1,Math.max(0,(point-src.offsetTop)/Math.max(1,src.offsetHeight)));
  const target=Math.max(0,dest.offsetTop+dest.offsetHeight*fraction-14);
- syncing=true;to.scrollTop=target;
- requestAnimationFrame(()=>{syncing=false;});
-}
-function requestAlignment(){
- if(alignmentScheduled)return;
- alignmentScheduled=true;
- requestAnimationFrame(()=>{
-  alignmentScheduled=false;
-  alignPanes(activePane,activePane===original?translated:original);
- });
+ setScrollWithoutFeedback(to,target);
 }
 function updateCurrentPage(){
  if(!pageBlocks.size)return;
@@ -314,12 +337,18 @@ async function maybeLoadMore(){
  }
 }
 function bindScroll(p,other){
- p.addEventListener('touchmove',()=>{activePane=p;autoLoadArmed=true;scheduleEdgeCheck();},{passive:true});
- p.addEventListener('wheel',()=>{activePane=p;autoLoadArmed=true;scheduleEdgeCheck();},{passive:true});
- p.addEventListener('pointerdown',()=>{activePane=p;},{passive:true});
+ const select=()=>{activePane=p;};
+ const scrollingGesture=()=>{select();autoLoadArmed=true;scheduleEdgeCheck();};
+ p.addEventListener('touchstart',select,{passive:true});
+ p.addEventListener('touchmove',scrollingGesture,{passive:true});
+ p.addEventListener('wheel',scrollingGesture,{passive:true});
+ p.addEventListener('pointerdown',select,{passive:true});
+ p.addEventListener('keydown',select);
  p.addEventListener('scroll',()=>{
-  if(syncing)return;
-  activePane=p;alignPanes(p,other);updateCurrentPage();scheduleEdgeCheck();
+  if(consumeSilentScroll(p))return;
+  if(p!==activePane)return;
+  alignPanes(p,other);
+  updateCurrentPage();scheduleEdgeCheck();
  },{passive:true});
 }
 bindScroll(original,translated);bindScroll(translated,original);

@@ -1,3 +1,26 @@
-V3.4 — atualização incremental da V3.3: rolagem contínua.
-Manter os arquivos já publicados na pasta vendor. Não apagar essa pasta.
-No Safari, tocar em Abrir PDF e rolar ao fim da página: a próxima carrega sem clicar.
+LEITOR BILÍNGUE V3.5 — CORREÇÃO DE ROLAGEM INVOLUNTÁRIA
+
+Atualização experimental da V3.4, preservando a tradução local Bergamot.
+
+O QUE FOI AJUSTADO
+- Colunas só comandam sincronização quando escolhidas pelo gesto do usuário.
+- Scrolls automáticos gerados pelo próprio código não podem comandar a coluna oposta.
+- Traduções recebidas de forma assíncrona não forçam realinhamento inesperado.
+- Ao traduzir texto acima da área visível, a posição de leitura é preservada.
+- Mantida a leitura contínua, carregamento progressivo e limite de 5 páginas em memória.
+
+INSTALAÇÃO
+1. Extraia o ZIP no computador.
+2. No GitHub > leitor-bilingue, escolha Adicionar arquivo > Carregar arquivos.
+3. Arraste somente a pasta v3-teste que veio neste ZIP.
+4. Confira v3-teste/index.html e v3-teste/app.js antes de confirmar.
+5. NÃO apague a pasta existente v3-teste/vendor: o pacote não contém o Bergamot.
+6. Abra a página /v3-teste/ no Safari e atualize até aparecer v3.5.
+
+VALIDAÇÃO
+Abra o PDF, avance até a página 19–21 e role normalmente. Tire o dedo da tela
+por alguns segundos e observe se qualquer coluna continua saltando. Se isso
+persistir, envie um vídeo para identificar o próximo ajuste.
+
+Esta correção passou na verificação de sintaxe e em teste lógico isolado,
+mas não foi validada em navegador real nem no iPhone. A V2 na raiz do GitHub permanece intocada.
