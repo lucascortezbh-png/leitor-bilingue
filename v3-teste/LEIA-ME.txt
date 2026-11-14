@@ -1,26 +1,4 @@
-LEITOR BILÍNGUE V3.2 — CORREÇÃO EXPERIMENTAL DO WORKER
-
-Erro observado no Safari: "Could not initialise translation worker: The object can not be cloned".
-Causa provável: uma função `onerror` era passada nas opções do BatchTranslator,
-mas não é uma opção documentada e funções não podem ser copiadas via postMessage.
-
-Alterações:
-- remove a função `onerror` das opções do tradutor;
-- declara explicitamente a URL do Worker do mesmo domínio;
-- renova o cache do Service Worker e o carregamento de módulos;
-- permite nova tentativa após falha na primeira tradução.
-
-Este pacote ainda precisa de teste REAL no Safari/iPhone. NÃO substitua a V2.
-
-PUBLICAÇÃO
-1. No repositório github.com/lucascortezbh-png/leitor-bilingue, escolha
-   Adicionar arquivo -> Carregar arquivos.
-2. Arraste a pasta COMPLETA `v3-teste` deste ZIP.
-3. Antes de confirmar, confira `v3-teste/index.html` (NÃO `index.html` na raiz).
-4. Confirme alterações. Abra em Safari:
-   https://lucascortezbh-png.github.io/leitor-bilingue/v3-teste/
-5. Atualize, confirme título "v3.2 · ajuste do Worker Bergamot",
-   toque em "Testar tradutor" sem abrir PDF.
-
-O Service Worker da V3 tem escopo restrito a /v3-teste/ e não altera V2.
-Se falhar, copie a mensagem completa.
+VERSÃO 3.3 EXPERIMENTAL
+Carrega os arquivos Bergamot locais de v3-teste/vendor, não por CDN.
+A pasta vendor deve ser preparada no Windows antes de publicar.
+A tradução local no Safari ainda não foi validada; a versão 2 não deve ser substituída.

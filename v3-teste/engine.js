@@ -1,7 +1,5 @@
-// V3.2 experimental: remove opção não serializável na inicialização do Worker
-// por Service Worker de escopo restrito. Não usa MyMemory nem serviços de tradução.
-// Os arquivos do pacote são obtidos de CDNs públicos; os modelos são baixados
-// pelo Bergamot. Textos a traduzir permanecem no navegador.
+// V3.3: os quatro arquivos do motor Bergamot são hospedados no mesmo
+// GitHub Pages da V3. Desativa o proxy/CDN do Service Worker antigo.
 function deadline(task,ms,label){
   let timeout;
   return Promise.race([
@@ -11,79 +9,67 @@ function deadline(task,ms,label){
 }
 const PACKAGE_BASE = new URL('./vendor/',import.meta.url);
 let enginePromise;
-let listeners=new Set();
-function status(s){for(const cb of listeners){try{cb(s)}catch(e){console.warn(e);}}}
+const listeners=new Set();
+function status(s){for(const cb of listeners){try{cb(s)}catch(e){console.warn(e)}}}
 function readable(e){return e instanceof Error ? e.message : String(e);}
 
-async function ensureLocalWorker(){
-  if(!('serviceWorker' in navigator)){
-    throw new Error('Este navegador não oferece Service Worker, necessário para carregar o motor local.');
-  }
-  if(!globalThis.WebAssembly || !globalThis.Worker){
-    throw new Error('WebAssembly ou Web Worker indisponível neste navegador.');
-  }
-  status('Registrando tradutor isolado da versão 2…');
-  const swUrl = new URL('./sw-local.js?v=2',import.meta.url);
-  const reg = await deadline(navigator.serviceWorker.register(swUrl.href,{scope:'./'}),20000,'Registro do Service Worker');
+async function ensureLocalFiles(){
+  if(!('serviceWorker' in navigator)) throw new Error('Este Safari não oferece Service Worker.');
+  if(!globalThis.WebAssembly || !globalThis.Worker) throw new Error('WebAssembly ou Worker indisponível neste navegador.');
+  status('Desativando o carregador antigo de CDN…');
+  const swUrl=new URL('./sw-local.js?v=3',import.meta.url);
+  await deadline(navigator.serviceWorker.register(swUrl.href,{scope:'./'}),20000,'Registro do Service Worker');
   await deadline(navigator.serviceWorker.ready,20000,'Ativação do Service Worker');
-  const expected = new URL(swUrl.href).pathname;
-  if(!navigator.serviceWorker.controller?.scriptURL?.includes(expected)){
-    status('Ativando o tradutor no Safari…');
-    await deadline(new Promise((resolve,reject)=>{
-      const onChange=()=>{if(navigator.serviceWorker.controller?.scriptURL?.includes(expected)){cleanup();resolve();}};
-      const cleanup=()=>navigator.serviceWorker.removeEventListener('controllerchange',onChange);
-      navigator.serviceWorker.addEventListener('controllerchange',onChange);
-      onChange();
-    }),20000,'Controle local do Service Worker');
+  const isCurrent=()=>navigator.serviceWorker.controller?.scriptURL?.includes('sw-local.js?v=3');
+  if(!isCurrent()){
+    await deadline(new Promise(resolve=>{
+      const fn=()=>{if(isCurrent()){navigator.serviceWorker.removeEventListener('controllerchange',fn);resolve()}};
+      navigator.serviceWorker.addEventListener('controllerchange',fn);fn();
+    }),20000,'Substituição do Service Worker antigo');
   }
-  if(!navigator.serviceWorker.controller?.scriptURL?.includes(expected)){
-    throw new Error('O Safari ainda não ativou o tradutor local. Feche esta aba e abra novamente a versão 3.');
+  const files=[
+    ['translator.js',5000],
+    ['worker/translator-worker.js',5000],
+    ['worker/bergamot-translator-worker.js',5000],
+    ['worker/bergamot-translator-worker.wasm',1000000],
+  ];
+  for(const [p,min] of files){
+    status('Verificando arquivo local: '+p);
+    const r=await deadline(fetch(new URL(p,PACKAGE_BASE),{cache:'no-store'}),20000,'Carregamento de '+p);
+    if(!r.ok) throw new Error(`Arquivo ${p} ausente (HTTP ${r.status}). Execute PREPARAR_V3_3 no computador e envie a pasta completa com vendor.`);
+    const ab=await r.arrayBuffer();
+    if(ab.byteLength<min) throw new Error(`Arquivo ${p} inválido ou incompleto (${ab.byteLength} bytes).`);
   }
-  status('Conferindo acesso aos arquivos locais do tradutor…');
-  const entry = new URL('translator.js',PACKAGE_BASE);
-  const resp=await deadline(fetch(entry,{cache:'no-store'}),45000,'Download da biblioteca Bergamot');
-  if(!resp.ok)throw new Error(`Não foi possível carregar o Bergamot: HTTP ${resp.status}. Confirme a conexão.`);
-  const code=await resp.text();
-  if(!code.includes('BatchTranslator'))throw new Error('O módulo retornado pelo CDN não contém a biblioteca Bergamot.');
+  status('Biblioteca local disponível. Preparando o Worker…');
 }
 
 export async function createLocalTranslator(onStage=()=>{}){
   listeners.add(onStage);
   if(!enginePromise){
     enginePromise=(async()=>{
-      await ensureLocalWorker();
-      status('Importando biblioteca local, sem worker externo…');
-      const lib=await deadline(import('./vendor/translator.js'),20000,'Importação da biblioteca');
-      if(typeof lib.BatchTranslator!=='function')throw new Error('Biblioteca Bergamot não disponibilizou BatchTranslator.');
-      // As opções são transmitidas ao Worker por cópia estruturada (postMessage).
-      // Nunca passar funções (ex.: onerror) aqui: Safari acusa DataCloneError.
-      status('Criando processo de tradução local…');
-      const translator = new lib.BatchTranslator({
-        workers:1, batchSize:1, cacheSize:128, pivotLanguage:'en', downloadTimeout:45000,
-        workerUrl: new URL('worker/translator-worker.js',PACKAGE_BASE).href
+      await ensureLocalFiles();
+      const lib=await deadline(import('./vendor/translator.js'),20000,'Importação Bergamot');
+      if(typeof lib.BatchTranslator!=='function') throw new Error('Biblioteca local não disponibilizou BatchTranslator.');
+      const translator=new lib.BatchTranslator({
+        workers:1,batchSize:1,cacheSize:128,pivotLanguage:'en',downloadTimeout:45000,
+        workerUrl:new URL('worker/translator-worker.js',PACKAGE_BASE).href
       });
       return {
         translate:async text=>{
-          status('Carregando modelos e traduzindo (espanhol → português)…');
-          let reply;
-          try {
-            reply=await deadline(
-              translator.translate({from:'es',to:'pt',text,html:false}),
-              120000,'Primeira tradução / modelos'
-            );
-          } catch(error) {
-            // Testes posteriores precisam iniciar um Worker novo, não reutilizar o falho.
-            try {translator.delete();} catch(_) {}
+          status('Carregando modelos de idioma e traduzindo…');
+          try{
+            const reply=await deadline(translator.translate({from:'es',to:'pt',text,html:false}),120000,'Tradução/modelos');
+            if(typeof reply?.target?.text!=='string') throw new Error('Resposta inválida do tradutor.');
+            status('Tradução local concluída.');
+            return reply.target.text;
+          }catch(e){
+            try{translator.delete()}catch{}
             enginePromise=null;
-            throw error;
+            throw e;
           }
-          if(typeof reply?.target?.text!=='string')throw new Error('O tradutor retornou resposta inválida.');
-          status('Bergamot concluiu a tradução.');
-          return reply.target.text;
-        },
-        dispose:()=>translator.delete()
+        },dispose:()=>translator.delete()
       };
-    })().catch(err=>{enginePromise=null;status('Falha: '+readable(err));throw err;});
+    })().catch(err=>{enginePromise=null;status('Falha: '+readable(err));throw err});
   }
-  try{return await enginePromise;}finally{listeners.delete(onStage);}
+  try{return await enginePromise}finally{listeners.delete(onStage)}
 }

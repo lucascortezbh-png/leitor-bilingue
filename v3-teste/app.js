@@ -1,4 +1,4 @@
-import {createLocalTranslator} from './engine.js?v=sw2';
+import {createLocalTranslator} from './engine.js?v=local3';
 const $=id=>document.getElementById(id);
 const original=$('original'),translated=$('translation'),status=$('status');
 const fileEl=$('pdfFile'),pageNum=$('pageNum');
