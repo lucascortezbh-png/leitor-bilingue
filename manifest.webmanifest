@@ -1,0 +1,12 @@
+{
+  "name": "Leitor Bilíngue de PDF",
+  "short_name": "PDF Bilíngue",
+  "description": "Texto original e tradução lado a lado, com rolagem sincronizada.",
+  "lang": "pt-BR",
+  "start_url": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#f0f5f8",
+  "theme_color": "#16324a",
+  "icons": [{"src":"icon.svg","sizes":"any","type":"image/svg+xml","purpose":"any"}]
+}

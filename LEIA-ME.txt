@@ -1,0 +1,41 @@
+LEITOR BILINGUE DE PDF - PROTOTIPO 1
+==================================
+
+O QUE FAZ
+- Abre PDF com texto selecionavel.
+- Original e traducao sincronizados; em pe: um acima do outro; deitado: lado a lado.
+- Envia trechos para traduzir conforme voce avanca; nao precisa processar o PDF inteiro.
+- Permite escolher idioma do original e idioma da traducao.
+- Armazena traducoes de trechos curtos no navegador para evitar repeticao.
+- Inclui exemplo.pdf (espanhol).
+
+COMO COLOCAR NO IPHONE (SEM PAGAR)
+1) Crie uma conta gratuita no GitHub, se ainda nao tiver.
+2) Crie um repositorio PUBLICO (por exemplo, leitor-bilingue).
+3) Envie TODOS os arquivos desta pasta para a raiz do repositorio.
+4) Em Settings > Pages, selecione Deploy from a branch e branch main, pasta /(root), Save.
+5) Apos a publicacao, abra no Safari o endereco informado no GitHub Pages.
+6) No Safari, toque em Compartilhar e escolha Adicionar a Tela de Inicio.
+7) Abra o app, toque em Exemplo, selecione Espanhol -> Portugues,
+   marque a autorizacao para traduzir e role o texto.
+
+No computador, voce tambem pode testar hospedando a pasta em um servidor HTTP local:
+  python -m http.server 8000
+  depois abra http://localhost:8000
+
+ATENCAO
+- O prototipo nao esta publicado. Sem hospedagem, nao ha link publico para iPhone.
+- Precisa de INTERNET para carregar a biblioteca pdf.js e realizar a traducao.
+- Os trechos sao enviados a um servico EXTERNO (MyMemory) mediante sua autorizacao.
+- Uso anonimo gratuito do MyMemory: ate 5.000 caracteres por dia, sujeito a
+  limites de uso, disponibilidade e compatibilidade dos idiomas.
+- Nao envie documentos confidenciais. PDFs escaneados nao sao suportados (sem OCR).
+- Texto, tabelas, notas e PDF multicoluna podem nao ser reconstruidos perfeitamente.
+- Esta e uma primeira versao para experimentar; PDFs muito grandes ainda requerem
+  otimizacao de desempenho/virtualizacao.
+- O codigo usa a biblioteca PDF.js pela CDN Cloudflare; nao contem senha nem chave de API.
+
+SERVICOS E FONTES
+MyMemory documentacao: https://mymemory.translated.net/doc/spec.php
+Limites: https://mymemory.translated.net/doc/usagelimits.php
+PDF.js: https://mozilla.github.io/pdf.js/
