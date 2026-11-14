@@ -1,4 +1,3 @@
-VERSÃO 3.3 EXPERIMENTAL
-Carrega os arquivos Bergamot locais de v3-teste/vendor, não por CDN.
-A pasta vendor deve ser preparada no Windows antes de publicar.
-A tradução local no Safari ainda não foi validada; a versão 2 não deve ser substituída.
+V3.4 — atualização incremental da V3.3: rolagem contínua.
+Manter os arquivos já publicados na pasta vendor. Não apagar essa pasta.
+No Safari, tocar em Abrir PDF e rolar ao fim da página: a próxima carrega sem clicar.
