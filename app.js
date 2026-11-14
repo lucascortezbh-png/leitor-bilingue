@@ -3,249 +3,316 @@
   const $ = id => document.getElementById(id);
   const original = $('original'), translation = $('translation');
   const status = $('status'), consent = $('consent'), source = $('source'), target = $('target');
-  const input = $('pdfFile'), sample = $('sample');
+  const input = $('pdfFile'), sample = $('sample'), nextButton = $('nextPage');
+  const pageInput = $('pageInput'), jumpButton = $('jumpPage'), pageTotal = $('pageTotal');
   const encoder = new TextEncoder();
-  let blocks = [], queued = [], running = false, generation = 0, loadToken = 0, loading = false;
-  let observer = null, countDone = 0, ignoredScroll = false;
-  const memoryCache = new Map();
-  const MAX_BYTES = 440; // MyMemory accepts at most 500 UTF-8 bytes in q.
+  const MAX_BYTES = 440;
+  const KEEP_PAGES = 7;
+  const OCR_LANG = { es:'spa', en:'eng', fr:'fra', de:'deu', it:'ita', pt:'por', ja:'jpn', 'zh-CN':'chi_sim', ru:'rus', ar:'ara' };
 
-  function setStatus(message) { status.textContent = message; }
-  function make(tag, className, value) {
+  let doc = null, filename = '', nextPageNumber = 1, totalPages = 0;
+  let blocks = [], pages = [], queued = [], running = false, loadingPage = false;
+  let generation = 0, activeLoad = 0, observer = null, translated = 0;
+  let ignoredScroll = false, lastStatus = '';
+  let ocrWorker = null, ocrWorkerLang = '', ocrWorkerPromise = null;
+  const memoryCache = new Map();
+
+  function setStatus(msg) { lastStatus = msg; status.textContent = msg; }
+  function make(tag, cls, text) {
     const el = document.createElement(tag);
-    if (className) el.className = className;
-    if (value !== undefined) el.textContent = value;
+    if (cls) el.className = cls;
+    if (text !== undefined) el.textContent = text;
     return el;
   }
-  function chunks(text, maxBytes = MAX_BYTES) {
-    const result = [];
-    let current = '';
-    // Splits on spaces, guaranteeing each request respects the UTF-8 byte limit.
-    for (const word of text.trim().split(/\s+/u)) {
+  function yieldToUI() { return new Promise(r => setTimeout(r, 0)); }
+  function chunks(str, maxBytes = MAX_BYTES) {
+    const out=[]; let cur='';
+    for (const word of (str || '').trim().split(/\s+/u)) {
       if (!word) continue;
-      const proposed = current ? current + ' ' + word : word;
-      if (encoder.encode(proposed).length <= maxBytes) { current = proposed; continue; }
-      if (current) { result.push(current); current = ''; }
-      if (encoder.encode(word).length <= maxBytes) { current = word; continue; }
-      // Rare word without spaces: split safely by Unicode code points.
-      let part = '';
-      for (const char of word) {
-        if (encoder.encode(part + char).length > maxBytes) { if (part) result.push(part); part = ''; }
-        part += char;
+      if (encoder.encode(cur ? cur+' '+word : word).length <= maxBytes) { cur=cur?cur+' '+word:word; continue; }
+      if(cur) {out.push(cur);cur='';}
+      let part='';
+      for(const c of word) {
+        if(encoder.encode(part+c).length>maxBytes) {if(part)out.push(part);part='';}
+        part+=c;
       }
-      current = part;
+      cur=part;
     }
-    if (current) result.push(current);
-    return result;
+    if(cur)out.push(cur);
+    return out;
   }
   function textFromPage(items) {
-    // PDF text extraction is heuristic: works best on selectable-text, single-column PDFs.
-    const lines = [];
-    for (const it of items) {
-      const str = (it.str || '').trim();
-      if (!str) continue;
-      const y = it.transform?.[5] ?? 0, x = it.transform?.[4] ?? 0;
-      const height = Math.max(6, Math.abs(it.height || it.transform?.[3] || 11));
-      let line = lines.find(l => Math.abs(l.y - y) <= 2.2);
-      if (!line) { line = { y, height, spans: [] }; lines.push(line); }
-      line.spans.push({x, str});
+    const lines=[];
+    for(const item of items) {
+      const str=(item.str||'').trim();if(!str)continue;
+      const y=item.transform?.[5]??0,x=item.transform?.[4]??0;
+      const height=Math.max(6,Math.abs(item.height||item.transform?.[3]||11));
+      let line=lines.find(l=>Math.abs(l.y-y)<=2.2);
+      if(!line) {line={y,height,spans:[]};lines.push(line);}
+      line.spans.push({x,str});
     }
-    lines.sort((a,b) => b.y-a.y);
-    const cleaned = lines.map(l => ({
-      y:l.y, height:l.height,
-      text:l.spans.sort((a,b)=>a.x-b.x).map(s=>s.str).join(' ').replace(/\s+/g,' ').trim()
-    })).filter(l=>l.text);
-    if (!cleaned.length) return [];
-    const paragraphs = [];
-    let paragraph = cleaned[0].text;
-    for (let i = 1; i < cleaned.length; i++) {
-      const previous = cleaned[i-1], line = cleaned[i];
-      const gap = Math.abs(previous.y-line.y);
-      const newPara = gap > Math.max(15, previous.height*1.55);
-      if (newPara) { paragraphs.push(paragraph); paragraph = line.text; }
-      else if (paragraph.endsWith('-')) paragraph = paragraph.slice(0,-1) + line.text;
-      else paragraph += ' ' + line.text;
+    lines.sort((a,b)=>b.y-a.y);
+    const ordered=lines.map(l=>({y:l.y,height:l.height,text:l.spans.sort((a,b)=>a.x-b.x).map(s=>s.str).join(' ').replace(/\s+/g,' ').trim()})).filter(l=>l.text);
+    if(!ordered.length)return [];
+    const paragraphs=[];let para=ordered[0].text;
+    for(let i=1;i<ordered.length;i++) {
+      const a=ordered[i-1],b=ordered[i];
+      if(Math.abs(a.y-b.y)>Math.max(15,a.height*1.55)) {paragraphs.push(para);para=b.text;}
+      else if(para.endsWith('-'))para=para.slice(0,-1)+b.text;
+      else para+=' '+b.text;
     }
-    paragraphs.push(paragraph);
-    return paragraphs.flatMap(p=>chunks(p, MAX_BYTES));
+    paragraphs.push(para);
+    return paragraphs.flatMap(p=>chunks(p));
   }
-  function reset() {
-    generation += 1; loadToken += 1;
-    blocks = []; queued = []; running = false; countDone = 0;
+  function textFromOCR(text) {
+    // Basic grouping of OCR lines and blank-line-separated paragraphs.
+    return (text||'').replace(/\r/g,'').split(/\n\s*\n/g).flatMap(p=>chunks(p));
+  }
+  function initObserver() {
     observer?.disconnect();
-    original.replaceChildren(); translation.replaceChildren();
-    observer = new IntersectionObserver(entries => {
-      if (!consent.checked) return;
-      for (const entry of entries) {
-        if (entry.isIntersecting) enqueue(Number(entry.target.dataset.index));
-      }
-    }, {root:original, rootMargin:'450px 0px 450px 0px', threshold:0});
+    observer = new IntersectionObserver(entries=>{
+      if(!consent.checked)return;
+      for(const e of entries)if(e.isIntersecting)enqueue(+e.target.dataset.index);
+    },{root:original,rootMargin:'260px 0px 260px 0px',threshold:0});
   }
-  function insertPage(pageNumber, texts) {
-    if (!texts.length) return;
-    original.append(make('div','page-mark',`PÁGINA ${pageNumber}`));
-    translation.append(make('div','page-mark',`PÁGINA ${pageNumber}`));
-    for (const text of texts) {
-      const index = blocks.length;
-      const left = make('p','segment',text);
-      left.dataset.index = index;
-      const right = make('p','segment pending','Aguardando tradução…');
-      right.dataset.index = index;
-      original.append(left); translation.append(right);
-      blocks.push({text, left, right, state:'idle'});
+  function clearReading() {
+    generation++;
+    queued=[]; blocks=[]; pages=[];translated=0;
+    initObserver();
+    original.replaceChildren();translation.replaceChildren();
+    original.scrollTop=0;translation.scrollTop=0;
+  }
+  function setNavigation() {
+    nextButton.disabled=!doc || loadingPage || nextPageNumber>totalPages;
+    jumpButton.disabled=!doc || loadingPage;
+    pageInput.disabled=!doc || loadingPage;
+    pageInput.max=String(totalPages||1);
+    pageTotal.textContent=doc?`de ${totalPages}`:'de 0';
+  }
+  async function cleanupDoc() {
+    const old=doc;doc=null;
+    if(old)try{await old.destroy();}catch{}
+  }
+  async function openBytes(bytes,name) {
+    activeLoad++;
+    const load=activeLoad;
+    clearReading();await cleanupDoc();
+    filename=name;nextPageNumber=1;totalPages=0;loadingPage=false;
+    setNavigation();
+    if(!globalThis.pdfjsLib) {setStatus('Leitor PDF não carregou. Confira a conexão.');return;}
+    try {
+      setStatus('Abrindo PDF…');
+      pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+      const opened=await pdfjsLib.getDocument({data:bytes}).promise;
+      if(load!==activeLoad) {await opened.destroy();return;}
+      doc=opened;totalPages=opened.numPages;
+      pageInput.value='1';setNavigation();
+      setStatus(`${name}: ${totalPages} páginas. Leitura e OCR sob demanda.`);
+      await loadNextPage();
+    } catch(err) {setStatus('Erro ao abrir o PDF: '+(err?.message||'arquivo inválido'));console.error(err);}
+  }
+  async function getOcrWorker(lang, currentLoad) {
+    if(!globalThis.Tesseract?.createWorker)throw new Error('Biblioteca OCR indisponível. Verifique a internet.');
+    if(ocrWorker&&ocrWorkerLang===lang)return ocrWorker;
+    if(ocrWorkerPromise&&ocrWorkerLang===lang)return ocrWorkerPromise;
+    if(ocrWorkerPromise) {try{await ocrWorkerPromise;}catch{}}
+    if(ocrWorker) {try{await ocrWorker.terminate();}catch{}ocrWorker=null;}
+    ocrWorkerLang=lang;
+    setStatus('Baixando modelo de reconhecimento '+lang+' (primeira vez pode demorar)…');
+    ocrWorkerPromise=Tesseract.createWorker(lang,1,{
+      logger:m=>{
+        if(currentLoad!==activeLoad)return;
+        if(m.status==='recognizing text')setStatus(`Reconhecendo imagem: ${Math.round((m.progress||0)*100)}% · página ${nextPageNumber-1}/${totalPages}`);
+      }
+    });
+    try {ocrWorker=await ocrWorkerPromise;return ocrWorker;}
+    catch(e){ocrWorkerLang='';throw e;}
+    finally{ocrWorkerPromise=null;}
+  }
+  async function ocrPage(page,p,currentLoad) {
+    const lang=OCR_LANG[source.value]||'spa';
+    const base=page.getViewport({scale:1});
+    // Keep the canvas below 2.8 megapixels to reduce iPhone memory consumption.
+    const scale=Math.min(2.2,Math.sqrt(2800000/(base.width*base.height)));
+    const viewport=page.getViewport({scale});
+    const canvas=document.createElement('canvas');
+    canvas.width=Math.round(viewport.width);canvas.height=Math.round(viewport.height);
+    const ctx=canvas.getContext('2d',{alpha:false,willReadFrequently:true});
+    if(!ctx)throw new Error('O aparelho não conseguiu criar a imagem para OCR.');
+    try {
+      setStatus(`Página ${p}/${totalPages}: preparando imagem para OCR…`);
+      await page.render({canvasContext:ctx,viewport}).promise;
+      if(currentLoad!==activeLoad)return [];
+      const worker=await getOcrWorker(lang,currentLoad);
+      if(currentLoad!==activeLoad)return [];
+      setStatus(`Página ${p}/${totalPages}: reconhecendo texto da imagem…`);
+      const ret=await worker.recognize(canvas);
+      return textFromOCR(ret?.data?.text);
+    } finally {canvas.width=0;canvas.height=0;}
+  }
+  function addPage(p,texts,mode,error) {
+    const group={number:p,left:[],right:[],indexes:[]};
+    const leftMark=make('div','page-mark',`PÁGINA ${p}${mode==='ocr'?' · OCR':''}`);
+    const rightMark=make('div','page-mark',`PÁGINA ${p}`);
+    original.append(leftMark);translation.append(rightMark);
+    group.left.push(leftMark);group.right.push(rightMark);
+    if(!texts.length) {
+      const msg=error?'Erro no reconhecimento: '+error:'Nenhum texto encontrado nesta página. Use Próxima página para continuar.';
+      const a=make('p','empty',msg),b=make('p','empty','Sem texto para traduzir nesta página.');
+      original.append(a);translation.append(b);
+      group.left.push(a);group.right.push(b);
+    }
+    for(const t of texts) {
+      const id=blocks.length;
+      const left=make('p','segment',t),right=make('p','segment pending','Aguardando tradução…');
+      left.dataset.index=String(id);right.dataset.index=String(id);
+      original.append(left);translation.append(right);
+      group.left.push(left);group.right.push(right);group.indexes.push(id);
+      blocks.push({text:t,left,right,state:'idle'});
       observer.observe(left);
     }
-  }
-  async function readPDF(arrayBuffer, name) {
-    if (!globalThis.pdfjsLib) {
-      setStatus('Não foi possível carregar o leitor de PDF. Verifique a conexão à internet.'); return;
+    pages.push(group);
+    // Drop old DOM pages to keep very long PDFs usable on phones.
+    while(pages.length>KEEP_PAGES) {
+      const old=pages.shift();
+      const beforeL=original.scrollHeight,beforeR=translation.scrollHeight;
+      old.indexes.forEach(i=>{const b=blocks[i];if(b){observer.unobserve(b.left);b.state='discarded';blocks[i]=null;}});
+      old.left.forEach(n=>n.remove());old.right.forEach(n=>n.remove());
+      original.scrollTop=Math.max(0,original.scrollTop-(beforeL-original.scrollHeight));
+      translation.scrollTop=Math.max(0,translation.scrollTop-(beforeR-translation.scrollHeight));
     }
-    const myLoad = loadToken;
-    try {
-      loading = true;
-      pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
-      const doc = await pdfjsLib.getDocument({data:arrayBuffer}).promise;
-      if (loadToken !== myLoad) return;
-      setStatus(`Lendo ${name} (${doc.numPages} página(s))…`);
-      for (let p=1; p<=doc.numPages; p++) {
-        if (loadToken !== myLoad) return;
-        const page = await doc.getPage(p);
-        const content = await page.getTextContent();
-        if (loadToken !== myLoad) return;
-        insertPage(p, textFromPage(content.items));
-        page.cleanup();
-        setStatus(`PDF: ${name} · página ${p}/${doc.numPages} · ${blocks.length} trecho(s) · ${countDone} traduzido(s)`);
-        // Yield to the browser: users can start reading while subsequent pages load.
-        await new Promise(resolve=>setTimeout(resolve,0));
-      }
-      if (!blocks.length) {
-        original.append(make('p','empty','Este PDF não possui texto extraível. PDFs digitalizados precisam de OCR, ainda não disponível neste protótipo.'));
-        translation.append(make('p','empty','Sem texto para traduzir.'));
-      } else if (!consent.checked) {
-        setStatus(`PDF carregado: ${blocks.length} trecho(s). Marque a autorização para iniciar a tradução.`);
-      }
-    } catch(err) {
-      console.error(err);
-      setStatus(`Erro ao abrir PDF: ${err?.message || 'arquivo inválido ou protegido'}`);
-      if (!blocks.length) original.append(make('p','empty','Não foi possível extrair o texto deste arquivo.'));
-    } finally { if (myLoad === loadToken) loading = false; }
   }
-  function enqueue(index) {
-    const block = blocks[index];
-    if (!block || block.state !== 'idle' || !consent.checked) return;
-    block.state = 'queued'; queued.push({index, generation});
-    drain();
-  }
-  async function getTranslation(text, src, dst) {
-    if (src === dst) return text;
-    const key = `${src}|${dst}|${text}`;
-    if (memoryCache.has(key)) return memoryCache.get(key);
-    // Cache only short passages on this device; avoid storing document files remotely.
+  async function loadNextPage() {
+    if(!doc||loadingPage||nextPageNumber>totalPages)return;
+    const pdf=doc, token=activeLoad, n=nextPageNumber++;
+    loadingPage=true;setNavigation();
+    let page=null, mode='texto', texts=[],error='';
     try {
-      const cached = localStorage.getItem('lb:' + hash(key));
-      if (cached) { memoryCache.set(key,cached); return cached; }
-    } catch {}
-    const params = new URLSearchParams({q:text, langpair:`${src}|${dst}`});
-    const controller = new AbortController();
-    const timer = setTimeout(()=>controller.abort(),16000);
-    try {
-      const response = await fetch(`https://api.mymemory.translated.net/get?${params}`, {signal:controller.signal});
-      if (!response.ok) throw new Error(`servidor de tradução indisponível (${response.status})`);
-      const payload = await response.json();
-      if (Number(payload.responseStatus) !== 200 || !payload.responseData?.translatedText || payload.quotaFinished) {
-        throw new Error(payload.responseDetails || 'limite diário alcançado ou idioma não atendido');
-      }
-      const decoded = document.createElement('textarea');
-      decoded.innerHTML = payload.responseData.translatedText;
-      const value = decoded.value;
-      memoryCache.set(key,value);
-      try { if (text.length < 400) localStorage.setItem('lb:' + hash(key),value); } catch {}
-      return value;
-    } finally { clearTimeout(timer); }
+      setStatus(`${filename}: lendo página ${n} de ${totalPages}…`);
+      page=await pdf.getPage(n);
+      const content=await page.getTextContent();
+      if(token!==activeLoad)return;
+      texts=textFromPage(content.items);
+      if(!texts.length){mode='ocr';texts=await ocrPage(page,n,token);}
+      if(token!==activeLoad)return;
+    } catch(err) {error=err?.message||String(err);console.error('Falha ao carregar página',n,err);}
+    finally {page?.cleanup();loadingPage=false;setNavigation();}
+    if(token!==activeLoad)return;
+    addPage(n,texts,mode,error);
+    pageInput.value=String(n);
+    setStatus(error?`Página ${n}/${totalPages}: ${error}`:`Página ${n}/${totalPages} · ${texts.length} trecho(s) · ${mode==='ocr'?'texto reconhecido por OCR':'texto extraído'}. Role para traduzir ou avançar.`);
+    if(consent.checked)translateVisible();
   }
-  function hash(str) {
-    let h = 2166136261;
-    for (let i=0;i<str.length;i++) h=Math.imul(h^str.charCodeAt(i),16777619);
-    return (h>>>0).toString(36) + '-' + str.length;
+  async function jumpToPage() {
+    if(!doc||loadingPage)return;
+    const n=Number(pageInput.value);
+    if(!Number.isInteger(n)||n<1||n>totalPages){setStatus(`Informe uma página entre 1 e ${totalPages}.`);return;}
+    clearReading();nextPageNumber=n;setNavigation();await loadNextPage();
+  }
+  function hash(s){let h=2166136261;for(let i=0;i<s.length;i++)h=Math.imul(h^s.charCodeAt(i),16777619);return(h>>>0).toString(36)+'-'+s.length;}
+  async function getTranslation(text,src,dst) {
+    if(src===dst)return text;
+    const key=`${src}|${dst}|${text}`;
+    if(memoryCache.has(key))return memoryCache.get(key);
+    try{const cached=localStorage.getItem('lb:'+hash(key));if(cached){memoryCache.set(key,cached);return cached;}}catch{}
+    const qs=new URLSearchParams({q:text,langpair:`${src}|${dst}`});
+    const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),16000);
+    try{
+      const response=await fetch('https://api.mymemory.translated.net/get?'+qs,{signal:controller.signal});
+      if(!response.ok)throw new Error('serviço indisponível ('+response.status+')');
+      const payload=await response.json();
+      if(+payload.responseStatus!==200||!payload.responseData?.translatedText||payload.quotaFinished)
+        throw new Error(payload.responseDetails||'limite diário atingido ou idioma não atendido');
+      const decoded=document.createElement('textarea');decoded.innerHTML=payload.responseData.translatedText;
+      const translatedText=decoded.value;
+      memoryCache.set(key,translatedText);
+      try{if(text.length<400)localStorage.setItem('lb:'+hash(key),translatedText);}catch{}
+      return translatedText;
+    } finally{clearTimeout(timer);}
+  }
+  function enqueue(id) {
+    const b=blocks[id];
+    if(!b||b.state!=='idle'||!consent.checked)return;
+    b.state='queued';queued.push({id,generation});drain();
   }
   async function drain() {
-    if (running) return;
-    running = true;
-    try {
-      while (queued.length && consent.checked) {
-        const job = queued.shift();
-        if (job.generation !== generation) continue;
-        const b = blocks[job.index];
-        if (!b || b.state !== 'queued') continue;
-        b.state = 'working'; b.right.textContent = 'Traduzindo…';
+    if(running)return;
+    running=true;
+    try{
+      while(queued.length&&consent.checked) {
+        const job=queued.shift();if(job.generation!==generation)continue;
+        const b=blocks[job.id];if(!b||b.state!=='queued')continue;
+        b.state='working';b.right.textContent='Traduzindo…';
         const src=source.value,dst=target.value;
-        try {
-          const result = await getTranslation(b.text,src,dst);
-          if (job.generation !== generation || src !== source.value || dst !== target.value) continue;
-          b.right.textContent = result;
-          b.right.classList.remove('pending','failed'); b.state='done'; countDone++;
-          setStatus(`${countDone} de ${blocks.length} trechos traduzidos${loading?' · lendo mais páginas…':''}`);
-        } catch(err) {
-          if (job.generation !== generation) continue;
-          b.right.textContent = `Não foi possível traduzir este trecho. ${err?.message || 'Tente novamente.'}`;
-          b.right.classList.remove('pending'); b.right.classList.add('failed'); b.state='failed';
-          setStatus('Tradução interrompida para um trecho. Verifique a conexão ou o limite gratuito.');
+        try{
+          const result=await getTranslation(b.text,src,dst);
+          if(job.generation!==generation||src!==source.value||dst!==target.value||!b.right.isConnected)continue;
+          b.right.textContent=result;b.right.classList.remove('pending','failed');b.state='done';translated++;
+        }catch(err){
+          if(job.generation!==generation||!b.right.isConnected)continue;
+          b.right.textContent='Tradução indisponível: '+(err?.message||'erro de conexão');
+          b.right.classList.remove('pending');b.right.classList.add('failed');b.state='failed';
+          setStatus('Alguns trechos não foram traduzidos. Verifique a internet ou limite gratuito.');
         }
-        await new Promise(resolve=>setTimeout(resolve,100)); // gentler to a free public API
+        await new Promise(r=>setTimeout(r,90));
       }
-    } finally { running=false; if (queued.length && consent.checked) setTimeout(drain,0); }
+    } finally {running=false;if(queued.length&&consent.checked)setTimeout(drain,0);}
   }
   function translateVisible() {
-    if (!consent.checked) {setStatus('Marque a autorização para iniciar a tradução.');return;}
-    const top = original.scrollTop, bottom=top+original.clientHeight+500;
-    for(let i=0;i<blocks.length;i++) {
-      const b=blocks[i];
-      if (b.left.offsetTop + b.left.offsetHeight >= top-500 && b.left.offsetTop<=bottom) enqueue(i);
-    }
+    if(!consent.checked)return;
+    const top=original.scrollTop-400,bottom=original.scrollTop+original.clientHeight+400;
+    for(const b of blocks)if(b&&b.left.isConnected&&b.left.offsetTop+b.left.offsetHeight>=top&&b.left.offsetTop<=bottom)enqueue(+b.left.dataset.index);
   }
   function onLanguageChange() {
-    generation++;
-    queued=[]; countDone=0;
-    for (const b of blocks) {b.state='idle';b.right.textContent='Aguardando tradução…';b.right.classList.remove('failed');b.right.classList.add('pending');}
-    if (consent.checked) translateVisible();
+    generation++;queued=[];translated=0;
+    for(const b of blocks)if(b){b.state='idle';b.right.textContent='Aguardando tradução…';b.right.classList.remove('failed');b.right.classList.add('pending');}
+    if(consent.checked)translateVisible();
+    setStatus('Idioma atualizado. O OCR das próximas páginas usará o idioma de origem escolhido.');
   }
-  async function openBytes(buffer,name) {reset(); await readPDF(buffer,name);}
-  input.addEventListener('change',async () => {
-    const file = input.files?.[0];
-    if (!file) return;
-    if (!/\.pdf$/i.test(file.name) && file.type !== 'application/pdf') {setStatus('Escolha um PDF.');return;}
+  function onScroll(from,to) {
+    let scrollTimer;
+    from.addEventListener('scroll',()=>{
+      if(ignoredScroll)return;
+      const list=from.querySelectorAll('p.segment');
+      if(list.length) {
+        const pos=from.scrollTop,children=Array.from(list);
+        let chosen=children[0];for(const n of children){if(n.offsetTop<=pos+30)chosen=n;else break;}
+        const other=to.querySelector(`p.segment[data-index="${chosen.dataset.index}"]`);
+        if(other){
+          const ratio=Math.max(0,Math.min(1,(pos-chosen.offsetTop)/Math.max(1,chosen.offsetHeight)));
+          ignoredScroll=true;to.scrollTop=other.offsetTop+ratio*other.offsetHeight;
+          setTimeout(()=>{ignoredScroll=false;},60);
+        }
+      }
+      translateVisible();
+      // Only load the next PDF page after a real scroll, not automatically at startup.
+      clearTimeout(scrollTimer);
+      scrollTimer=setTimeout(()=>{
+        if(from.scrollTop>25 && from.scrollTop+from.clientHeight>=from.scrollHeight-100 && !loadingPage)loadNextPage();
+      },130);
+    },{passive:true});
+  }
+  input.addEventListener('change',async()=>{
+    const file=input.files?.[0];if(!file)return;
+    if(!/\.pdf$/i.test(file.name)&&file.type!=='application/pdf'){setStatus('Selecione um arquivo PDF.');return;}
     await openBytes(await file.arrayBuffer(),file.name);
   });
   sample.addEventListener('click',async()=>{
-    try {const res=await fetch('./exemplo.pdf'); if(!res.ok)throw new Error(`HTTP ${res.status}`);
-      await openBytes(await res.arrayBuffer(),'exemplo.pdf');
-    } catch {setStatus('Exemplo indisponível. Use Abrir PDF para selecionar o arquivo de teste.');}
+    try {const response=await fetch('./exemplo.pdf');if(!response.ok)throw new Error('HTTP '+response.status);
+      await openBytes(await response.arrayBuffer(),'exemplo.pdf');}
+    catch(err){setStatus('Não foi possível abrir o PDF de exemplo: '+err.message);}
   });
+  nextButton.addEventListener('click',loadNextPage);
+  jumpButton.addEventListener('click',jumpToPage);
+  pageInput.addEventListener('keydown',event=>{if(event.key==='Enter')jumpToPage();});
   source.addEventListener('change',onLanguageChange);
   target.addEventListener('change',onLanguageChange);
   consent.addEventListener('change',()=>{
-    if (consent.checked) translateVisible();
-    else {queued=[]; setStatus('Tradução pausada. Seu PDF permanece aberto.');}
+    if(consent.checked){translateVisible();setStatus('Tradução ativada; os trechos visíveis serão enviados ao MyMemory.');}
+    else{queued=[];setStatus('Tradução pausada. O reconhecimento OCR continua local no aparelho.');}
   });
-  function linkScroll(from,to) {
-    from.addEventListener('scroll',()=>{
-      if (ignoredScroll) return;
-      const list=from.querySelectorAll('p.segment');
-      if (!list.length) return;
-      const pos=from.scrollTop;
-      let chosen=list[0];
-      for (const item of list) {if(item.offsetTop <= pos+30) chosen=item; else break;}
-      const other=to.querySelector(`p.segment[data-index="${chosen.dataset.index}"]`);
-      if (!other) return;
-      const ratio=Math.max(0,Math.min(1,(pos-chosen.offsetTop)/Math.max(1,chosen.offsetHeight)));
-      ignoredScroll=true;
-      to.scrollTop=other.offsetTop + ratio*other.offsetHeight;
-      setTimeout(()=>{ignoredScroll=false;},60);
-      if(from===original) translateVisible();
-    },{passive:true});
-  }
-  linkScroll(original,translation); linkScroll(translation,original);
-  if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
+  onScroll(original,translation);onScroll(translation,original);
+  initObserver();setNavigation();
+  if('serviceWorker' in navigator&&location.protocol.startsWith('http'))
     window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(()=>{}));
-  }
 })();

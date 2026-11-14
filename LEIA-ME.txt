@@ -1,41 +1,53 @@
-LEITOR BILINGUE DE PDF - PROTOTIPO 1
-==================================
+LEITOR BILINGUE - VERSAO 2 COM OCR
+=================================
 
-O QUE FAZ
-- Abre PDF com texto selecionavel.
-- Original e traducao sincronizados; em pe: um acima do outro; deitado: lado a lado.
-- Envia trechos para traduzir conforme voce avanca; nao precisa processar o PDF inteiro.
-- Permite escolher idioma do original e idioma da traducao.
-- Armazena traducoes de trechos curtos no navegador para evitar repeticao.
-- Inclui exemplo.pdf (espanhol).
+CORRECAO
+O primeiro prototipo so reconhecia texto selecionavel. PDFs digitalizados
+mostravam 'Este PDF nao possui texto extraivel'. Nesta versao, se uma pagina
+nao possuir texto extraivel, o aplicativo tenta reconhecer suas palavras
+com OCR (Tesseract.js, executado no navegador). O processo de 364 paginas
+sera feito aos poucos, nao de uma vez.
 
-COMO COLOCAR NO IPHONE (SEM PAGAR)
-1) Crie uma conta gratuita no GitHub, se ainda nao tiver.
-2) Crie um repositorio PUBLICO (por exemplo, leitor-bilingue).
-3) Envie TODOS os arquivos desta pasta para a raiz do repositorio.
-4) Em Settings > Pages, selecione Deploy from a branch e branch main, pasta /(root), Save.
-5) Apos a publicacao, abra no Safari o endereco informado no GitHub Pages.
-6) No Safari, toque em Compartilhar e escolha Adicionar a Tela de Inicio.
-7) Abra o app, toque em Exemplo, selecione Espanhol -> Portugues,
-   marque a autorizacao para traduzir e role o texto.
+COMO ATUALIZAR O GITHUB (SEM CRIAR OUTRO REPOSITORIO)
+1. Extraia este ZIP no computador.
+2. Entre no seu repositorio GitHub 'leitor-bilingue'.
+3. Abra o arquivo index.html -> icone de lapis (Edit this file).
+4. Opcionalmente, voce pode substituir os arquivos via GitHub no navegador
+   um por um; para simplificar com varios arquivos, use 'Add file > Upload files'
+   e arraste os arquivos desta pasta para a raiz. Se o GitHub exibir aviso
+   de arquivos com nomes repetidos, confirme a substituicao.
+5. Aguarde o GitHub Pages publicar. Atualize Safari. Como existe um Service
+   Worker antigo, talvez seja necessario fechar o aplicativo e reabri-lo
+   duas vezes, ou remover o icone e adicionar de novo pelo Safari.
+6. Confirme o titulo 'Leitor Bilingue · v2 com OCR'.
 
-No computador, voce tambem pode testar hospedando a pasta em um servidor HTTP local:
-  python -m http.server 8000
-  depois abra http://localhost:8000
+USO
+- Abra um PDF. A primeira pagina sera carregada, sem ler todas as 364.
+- Caso seja uma pagina digitalizada, OCR comecara automaticamente; a
+  primeira vez baixa um modelo de idioma e pode demorar, dependendo da internet.
+- Deixe 'De' como o idioma original, por exemplo Espanhol, pois ele tambem
+  determina o modelo de OCR. Escolha 'Para' o idioma da traducao.
+- Marque autorizacao para enviar trechos ao MyMemory (servico externo).
+- Role para acompanhar a traducao; toque 'Proxima pagina' ou role ate o fim
+  para carregar mais paginas, ou digite o numero e toque 'Ir'.
+- Para evitar travamentos, so as ultimas 7 paginas ficam na tela por vez.
+- PDFs sigilosos nao devem ser enviados a servicos externos de traducao.
+- A precisao do OCR depende da nitidez e da fonte. Imagens, tabelas e
+  capitulos em multiplas colunas podem produzir texto fora de ordem.
+- Tesseract.js e PDF.js sao bibliotecas gratuitas; a traducao MyMemory tem
+  limites de uso, e documentos grandes podem excede-los.
 
-ATENCAO
-- O prototipo nao esta publicado. Sem hospedagem, nao ha link publico para iPhone.
-- Precisa de INTERNET para carregar a biblioteca pdf.js e realizar a traducao.
-- Os trechos sao enviados a um servico EXTERNO (MyMemory) mediante sua autorizacao.
-- Uso anonimo gratuito do MyMemory: ate 5.000 caracteres por dia, sujeito a
-  limites de uso, disponibilidade e compatibilidade dos idiomas.
-- Nao envie documentos confidenciais. PDFs escaneados nao sao suportados (sem OCR).
-- Texto, tabelas, notas e PDF multicoluna podem nao ser reconstruidos perfeitamente.
-- Esta e uma primeira versao para experimentar; PDFs muito grandes ainda requerem
-  otimizacao de desempenho/virtualizacao.
-- O codigo usa a biblioteca PDF.js pela CDN Cloudflare; nao contem senha nem chave de API.
+TECNOLOGIA E PRIVACIDADE
+- PDF.js v3.11.174, carregado via Cloudflare CDN.
+- Tesseract.js v5.1.1, carregado via jsDelivr CDN. OCR executado no iPhone,
+  os modelos do idioma sao baixados pela internet. Sem envio do PDF ao
+  servico de OCR por este codigo.
+- MyMemory recebe pequenos trechos somente apos a autorizacao do usuario.
+- Para uso pessoal, publique apenas o codigo, nunca seus PDFs privados.
 
-SERVICOS E FONTES
-MyMemory documentacao: https://mymemory.translated.net/doc/spec.php
-Limites: https://mymemory.translated.net/doc/usagelimits.php
-PDF.js: https://mozilla.github.io/pdf.js/
+LIMITES
+- Esta versao e experimental; ainda necessita de teste real no iPhone.
+- OCR de uma pagina pode levar segundos ou dezenas de segundos.
+- Paginas de baixa qualidade podem falhar; documentos grandes ultrapassam
+  o limite diario gratuito de traducao. Nao ha garantia de traducao
+  completa sem custos para 364 paginas.
