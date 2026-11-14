@@ -1,19 +1,26 @@
-Leitor Bilíngue V3.1 — Correção experimental para Safari (14/11/2026)
+LEITOR BILÍNGUE V3.2 — CORREÇÃO EXPERIMENTAL DO WORKER
 
-Esta pasta é PARA TESTE. Envie a pasta inteira v3-teste ao diretório raiz do repositório leitor-bilingue.
-Confirme que aparece v3-teste/index.html (e não index.html sozinho).
+Erro observado no Safari: "Could not initialise translation worker: The object can not be cloned".
+Causa provável: uma função `onerror` era passada nas opções do BatchTranslator,
+mas não é uma opção documentada e funções não podem ser copiadas via postMessage.
 
-A versão 2 na raiz permanece intacta.
+Alterações:
+- remove a função `onerror` das opções do tradutor;
+- declara explicitamente a URL do Worker do mesmo domínio;
+- renova o cache do Service Worker e o carregamento de módulos;
+- permite nova tentativa após falha na primeira tradução.
 
-No Safari, abra /leitor-bilingue/v3-teste/ e atualize.
-Sem abrir PDF, pressione Testar tradutor; veja a mensagem de progresso.
-A primeira tradução baixa JS, WASM e modelos es->en->pt; pode usar muita memória e dados.
-Tradução local não tem cota diária do MyMemory. Não garante compatibilidade/velocidade no iPhone.
+Este pacote ainda precisa de teste REAL no Safari/iPhone. NÃO substitua a V2.
 
-O que foi alterado:
-- Service Worker com escopo restrito à v3-teste, que obtém os arquivos oficiais de @browsermt/bergamot-translator 0.4.9 e os disponibiliza sob o mesmo domínio.
-- Importação do Bergamot pelo próprio domínio, incluindo o Web Worker e o WASM.
-- Erros do Worker chegam à interface; cada etapa tem limite de tempo.
-- Sem necessidade de alterar o código da V2 ou habilitar API paga.
+PUBLICAÇÃO
+1. No repositório github.com/lucascortezbh-png/leitor-bilingue, escolha
+   Adicionar arquivo -> Carregar arquivos.
+2. Arraste a pasta COMPLETA `v3-teste` deste ZIP.
+3. Antes de confirmar, confira `v3-teste/index.html` (NÃO `index.html` na raiz).
+4. Confirme alterações. Abra em Safari:
+   https://lucascortezbh-png.github.io/leitor-bilingue/v3-teste/
+5. Atualize, confirme título "v3.2 · ajuste do Worker Bergamot",
+   toque em "Testar tradutor" sem abrir PDF.
 
-Limitação: arquivos JS/WASM vêm de CDN público e os modelos de servidores Bergamot. Se o Safari, a rede, a CDN ou os modelos falharem, o teste exibirá erro. Não validado em iPhone real.
+O Service Worker da V3 tem escopo restrito a /v3-teste/ e não altera V2.
+Se falhar, copie a mensagem completa.

@@ -3,7 +3,7 @@
  * Espelha somente os quatro arquivos oficiais do pacote npm 0.4.9.
  * Os modelos de tradução são obtidos pela biblioteca diretamente do registro Bergamot.
  */
-const VERSION = 'v3-bergamot-worker-1';
+const VERSION = 'v3-bergamot-worker-2';
 const PACKAGE = '@browsermt/bergamot-translator@0.4.9';
 const allowed = {
   'translator.js':'text/javascript; charset=utf-8',

@@ -1,4 +1,4 @@
-// V3.1 experimental: biblioteca Bergamot e Worker carregados no mesmo domínio
+// V3.2 experimental: remove opção não serializável na inicialização do Worker
 // por Service Worker de escopo restrito. Não usa MyMemory nem serviços de tradução.
 // Os arquivos do pacote são obtidos de CDNs públicos; os modelos são baixados
 // pelo Bergamot. Textos a traduzir permanecem no navegador.
@@ -11,7 +11,6 @@ function deadline(task,ms,label){
 }
 const PACKAGE_BASE = new URL('./vendor/',import.meta.url);
 let enginePromise;
-let activeFailure;
 let listeners=new Set();
 function status(s){for(const cb of listeners){try{cb(s)}catch(e){console.warn(e);}}}
 function readable(e){return e instanceof Error ? e.message : String(e);}
@@ -24,7 +23,7 @@ async function ensureLocalWorker(){
     throw new Error('WebAssembly ou Web Worker indisponível neste navegador.');
   }
   status('Registrando tradutor isolado da versão 2…');
-  const swUrl = new URL('./sw-local.js?v=1',import.meta.url);
+  const swUrl = new URL('./sw-local.js?v=2',import.meta.url);
   const reg = await deadline(navigator.serviceWorker.register(swUrl.href,{scope:'./'}),20000,'Registro do Service Worker');
   await deadline(navigator.serviceWorker.ready,20000,'Ativação do Service Worker');
   const expected = new URL(swUrl.href).pathname;
@@ -56,26 +55,28 @@ export async function createLocalTranslator(onStage=()=>{}){
       status('Importando biblioteca local, sem worker externo…');
       const lib=await deadline(import('./vendor/translator.js'),20000,'Importação da biblioteca');
       if(typeof lib.BatchTranslator!=='function')throw new Error('Biblioteca Bergamot não disponibilizou BatchTranslator.');
-      let rejectFailure;
-      activeFailure = new Promise((_,reject)=>{rejectFailure=reject;});
-      // Previna erro de rejeição sem observador no caso de falha anterior ao primeiro translate.
-      activeFailure.catch(()=>{});
-      const onerror=err=>{
-        const e=new Error('Worker Bergamot falhou: '+readable(err));
-        status(e.message);
-        rejectFailure(e);
-      };
+      // As opções são transmitidas ao Worker por cópia estruturada (postMessage).
+      // Nunca passar funções (ex.: onerror) aqui: Safari acusa DataCloneError.
       status('Criando processo de tradução local…');
       const translator = new lib.BatchTranslator({
-        workers:1,batchSize:1,cacheSize:128,pivotLanguage:'en',downloadTimeout:45000,
-        onerror
+        workers:1, batchSize:1, cacheSize:128, pivotLanguage:'en', downloadTimeout:45000,
+        workerUrl: new URL('worker/translator-worker.js',PACKAGE_BASE).href
       });
       return {
         translate:async text=>{
           status('Carregando modelos e traduzindo (espanhol → português)…');
-          const reply=await deadline(Promise.race([
-            translator.translate({from:'es',to:'pt',text,html:false}),activeFailure
-          ]),120000,'Primeira tradução / modelos');
+          let reply;
+          try {
+            reply=await deadline(
+              translator.translate({from:'es',to:'pt',text,html:false}),
+              120000,'Primeira tradução / modelos'
+            );
+          } catch(error) {
+            // Testes posteriores precisam iniciar um Worker novo, não reutilizar o falho.
+            try {translator.delete();} catch(_) {}
+            enginePromise=null;
+            throw error;
+          }
           if(typeof reply?.target?.text!=='string')throw new Error('O tradutor retornou resposta inválida.');
           status('Bergamot concluiu a tradução.');
           return reply.target.text;
