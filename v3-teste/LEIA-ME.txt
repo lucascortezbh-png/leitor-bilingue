@@ -1,0 +1,45 @@
+LEITOR BILÍNGUE — V3 EXPERIMENTAL (PROVA DE CONCEITO)
+=====================================================
+
+OBJETIVO
+Testar um mecanismo de tradução local Bergamot (espanhol -> português)
+no próprio Safari do iPhone, sem chamadas à API MyMemory e sem cota diária.
+A interface inclui leitura de PDF por página, OCR de páginas digitalizadas,
+e rolagem sincronizada aproximada.
+
+IMPORTANTE: NÃO É UMA ATUALIZAÇÃO VALIDADA OU SUBSTITUTA DA VERSÃO 2.
+O pacote foi submetido a verificações estáticas de HTML e JavaScript, mas
+o motor real de tradução com modelos WASM ainda não foi testado no iPhone.
+Ele pode falhar devido ao carregamento de módulos, CORS, memória ou ao cache
+em versões específicas do Safari. Por isso há um botão 'Testar tradutor'.
+
+DEPENDÊNCIAS AO ABRIR ONLINE
+- PDF.js 3.11.174 do CDN Cloudflare
+- Tesseract.js 5 do jsDelivr para OCR, modelos da biblioteca
+- @browsermt/bergamot-translator 0.4.9 via esm.sh
+- Registro de modelos Bergamot hospedado externamente
+
+A tradução em si ocorre no dispositivo *se* o motor for carregado.
+Não existe fallback para outro servidor de tradução neste código.
+Modelos e bibliotecas são baixados da internet e o funcionamento offline
+não está garantido. O tamanho total baixado depende dos modelos.
+
+PUBLICAÇÃO SEGURA (SE QUISER TESTAR)
+1. Não substitua nenhum arquivo do projeto atual na raiz do repositório.
+2. No GitHub, crie uma pasta v3-teste dentro do MESMO repositório.
+3. Envie para ela index.html, app.js, engine.js e LEIA-ME.txt.
+   A página de teste ficará em:
+   https://lucascortezbh-png.github.io/leitor-bilingue/v3-teste/
+4. No Safari, toque em 'Testar tradutor' ANTES de abrir o PDF.
+5. Se traduzir a frase, abra um PDF pequeno para conferir o OCR e tradução.
+6. Se falhar, não mexa na v2: compartilhe a mensagem exibida.
+
+NOTA: Esta versão foi implementada como protótipo independente, inspirada
+na arquitetura da v2. Não é uma cópia do código original da v2.
+
+FONTES E REFERÊNCIAS
+https://github.com/browsermt/bergamot-translator
+https://github.com/browsermt/bergamot-translator/blob/main/wasm/module/README.md
+https://github.com/lucascortezbh-png/leitor-bilingue
+
+Lançamento experimental: 14/11/2026
