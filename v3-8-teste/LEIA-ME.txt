@@ -1,0 +1,11 @@
+LEITOR BILÍNGUE — V3.8 (teste de OCR aprimorado)
+
+A versão em produção permanece intacta. Envie a pasta v3-8-teste completa para a raiz do repositório; não substitua v3-7-teste nem v3-teste.
+
+Abrir no Safari/Chrome:
+https://lucascortezbh-png.github.io/leitor-bilingue/v3-8-teste/
+
+Teste: abra o PDF, vá à página 132, pressione “Revisar OCR da página” e aguarde.
+Essa função renderiza a página em resolução maior e, quando detecta uma fotografia colorida à esquerda com texto à direita, processa separadamente as regiões de texto. Não é garantido para imagens em preto e branco, tabelas ou diagramas complexos. Pode demorar.
+
+ATENÇÃO: O motor Bergamot continua na pasta v3-teste/vendor; essa pasta não deve ser apagada.
