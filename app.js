@@ -1,318 +1,389 @@
-'use strict';
-(() => {
-  const $ = id => document.getElementById(id);
-  const original = $('original'), translation = $('translation');
-  const status = $('status'), consent = $('consent'), source = $('source'), target = $('target');
-  const input = $('pdfFile'), sample = $('sample'), nextButton = $('nextPage');
-  const pageInput = $('pageInput'), jumpButton = $('jumpPage'), pageTotal = $('pageTotal');
-  const encoder = new TextEncoder();
-  const MAX_BYTES = 440;
-  const KEEP_PAGES = 7;
-  const OCR_LANG = { es:'spa', en:'eng', fr:'fra', de:'deu', it:'ita', pt:'por', ja:'jpn', 'zh-CN':'chi_sim', ru:'rus', ar:'ara' };
-
-  let doc = null, filename = '', nextPageNumber = 1, totalPages = 0;
-  let blocks = [], pages = [], queued = [], running = false, loadingPage = false;
-  let generation = 0, activeLoad = 0, observer = null, translated = 0;
-  let ignoredScroll = false, lastStatus = '';
-  let ocrWorker = null, ocrWorkerLang = '', ocrWorkerPromise = null;
-  const memoryCache = new Map();
-
-  function setStatus(msg) { lastStatus = msg; status.textContent = msg; }
-  function make(tag, cls, text) {
-    const el = document.createElement(tag);
-    if (cls) el.className = cls;
-    if (text !== undefined) el.textContent = text;
-    return el;
+// Leitor Bilíngue 3.6 — dois layouts; mantém a rolagem estável e a tradução local.
+// Mantém o motor Bergamot da 3.3, OCR por página e arquivos locais em vendor/.
+import {createLocalTranslator} from './engine.js?v=local3';
+const $ = id => document.getElementById(id);
+const original=$('original'),translated=$('translation'),status=$('status');
+const fileEl=$('pdfFile'),pageNum=$('pageNum');
+const btnPrev=$('prev'),btnNext=$('next'),btnGo=$('go');
+const SOURCE='spa',MAX_PAGES_IN_VIEW=5,EDGE=290;
+let pdf=null,totalPages=0,current=0,opening=false,session=0,viewEpoch=0,loading=false,ocrWorker=null;
+let userRequestedPage=false,initialFillCount=0,autoLoadArmed=false,activePane=original;
+// Eventos de scroll disparados por ajustes feitos pelo aplicativo não são gestos.
+const silentScrollTargets=new WeakMap();
+function setScrollWithoutFeedback(p,position){
+ const limit=Math.max(0,p.scrollHeight-p.clientHeight);
+ const target=Math.max(0,Math.min(limit,position));
+ if(Math.abs(p.scrollTop-target)<0.5)return;
+ silentScrollTargets.set(p,target);
+ p.scrollTop=target;
+}
+function consumeSilentScroll(p){
+ if(!silentScrollTargets.has(p))return false;
+ const target=silentScrollTargets.get(p);
+ silentScrollTargets.delete(p);
+ return Math.abs(p.scrollTop-target)<2;
+}
+function topTextAnchor(p){
+ const bounds=p.getBoundingClientRect(),cut=bounds.top+12;
+ for(const node of p.querySelectorAll('.mark, .segment, .empty')){
+  const r=node.getBoundingClientRect();
+  if(r.bottom>cut&&r.top<bounds.bottom)return {node,top:r.top};
+ }
+ return null;
+}
+function setTranslatedText(node,value,css){
+ // Preserva a posição do trecho já visível quando uma tradução anterior cresce.
+ const anchor=topTextAnchor(translated);
+ node.textContent=value;
+ if(css)node.className=css;
+ if(anchor&&anchor.node.isConnected){
+  const displacement=anchor.node.getBoundingClientRect().top-anchor.top;
+  if(Math.abs(displacement)>1)setScrollWithoutFeedback(translated,translated.scrollTop+displacement);
+ }
+}
+const pageBlocks=new Map(),translationCache=new Map();
+let translationQueue=[],translating=false;
+const setStatus=msg=>{status.textContent=msg;};
+function navigation(){
+ const has=!!pdf;
+ pageNum.disabled=!has||opening;
+ btnPrev.disabled=!has||opening||current<=1;
+ btnNext.disabled=!has||opening||current>=totalPages;
+ btnGo.disabled=!has||opening;
+ $('total').textContent='de '+totalPages;
+}
+function el(tag,cls,txt){const e=document.createElement(tag);if(cls)e.className=cls;if(txt!==undefined)e.textContent=txt;return e;}
+function chunks(input,max=460){
+ const result=[];let part='';const enc=new TextEncoder();
+ for(const word of input.replace(/\s+/g,' ').trim().split(' ')){
+  if(!word)continue;
+  const candidate=part?part+' '+word:word;
+  if(enc.encode(candidate).length<=max){part=candidate;continue;}
+  if(part)result.push(part);part='';let piece='';
+  for(const ch of word){if(enc.encode(piece+ch).length>max){if(piece)result.push(piece);piece='';}piece+=ch;}
+  part=piece;
+ }
+ if(part)result.push(part);return result;
+}
+function parseItems(items){
+ const lines=[];
+ for(const item of items){
+  const str=(item.str||'').trim();if(!str)continue;
+  const y=item.transform?.[5]??0,x=item.transform?.[4]??0;
+  const height=Math.max(6,Math.abs(item.height||item.transform?.[3]||12));
+  let line=lines.find(l=>Math.abs(l.y-y)<2.5);
+  if(!line){line={y,height,spans:[]};lines.push(line);}
+  line.spans.push({x,str});
+ }
+ lines.sort((a,b)=>b.y-a.y);
+ let paragraphs=[],part='',prior=null;
+ for(const line of lines){
+  const text=line.spans.sort((a,b)=>a.x-b.x).map(v=>v.str).join(' ');
+  if(prior&&Math.abs(prior.y-line.y)>Math.max(15,prior.height*1.6)){
+   if(part)paragraphs.push(part);part=text;
+  }else if(part.endsWith('-'))part=part.slice(0,-1)+text;
+  else part+=(part?' ':'')+text;
+  prior=line;
+ }
+ if(part)paragraphs.push(part);
+ return paragraphs.flatMap(p=>chunks(p));
+}
+function parseOCR(text){return (text||'').replace(/\r/g,'').split(/\n\s*\n/g).flatMap(p=>chunks(p));}
+async function recognize(page,n,tok,epoch){
+ if(!globalThis.Tesseract?.createWorker)throw new Error('O módulo OCR não carregou. Confira a conexão.');
+ if(!ocrWorker){
+  setStatus('Carregando OCR em espanhol…');
+  ocrWorker=await Tesseract.createWorker(SOURCE,1,{logger:m=>{
+   if(session===tok&&viewEpoch===epoch&&m.status==='recognizing text')
+    setStatus(`Reconhecendo página ${n}: ${Math.round(100*m.progress)}%`);
+  }});
+ }
+ const base=page.getViewport({scale:1});
+ const scale=Math.min(2.1,Math.sqrt(2400000/(base.width*base.height)));
+ const viewport=page.getViewport({scale});
+ const canvas=document.createElement('canvas');
+ canvas.width=Math.round(viewport.width);canvas.height=Math.round(viewport.height);
+ try{
+  await page.render({canvasContext:canvas.getContext('2d',{alpha:false}),viewport}).promise;
+  if(session!==tok||viewEpoch!==epoch)return [];
+  const ret=await ocrWorker.recognize(canvas);
+  return parseOCR(ret?.data?.text);
+ }finally{canvas.width=canvas.height=0;}
+}
+function sortedPages(){return Array.from(pageBlocks.keys()).sort((a,b)=>a-b);}
+function resetText(){
+ pageBlocks.clear();translationQueue=[];
+ original.replaceChildren(el('p','empty','Carregando página…'));
+ translated.replaceChildren(el('p','empty','Preparando tradução…'));
+ activePane=original;setScrollWithoutFeedback(original,0);setScrollWithoutFeedback(translated,0);
+ initialFillCount=0;autoLoadArmed=false;
+}
+function pageNodes(n,texts,mode){
+ const left=el('section','page-block'),right=el('section','page-block');
+ left.dataset.page=String(n);right.dataset.page=String(n);
+ left.append(el('div','mark',`PÁGINA ${n} · ${mode}`));
+ right.append(el('div','mark',`PÁGINA ${n}`));
+ const outputs=[];
+ if(!texts.length){
+  left.append(el('p','empty','Nenhum texto encontrado nesta página.'));
+  right.append(el('p','empty','Sem tradução nesta página.'));
+ }else{
+  texts.forEach((text,i)=>{
+   const a=el('p','segment',text),b=el('p','segment pending','Aguardando tradução local…');
+   a.dataset.index=String(i);b.dataset.index=String(i);
+   left.append(a);right.append(b);outputs.push(b);
+  });
+ }
+ return {left,right,outputs,texts,n};
+}
+function trimPages(direction){
+ while(pageBlocks.size>MAX_PAGES_IN_VIEW){
+  const nums=sortedPages();
+  const remove=direction==='prepend'?nums[nums.length-1]:nums[0];
+  const block=pageBlocks.get(remove);
+  const oldLeftHeight=original.scrollHeight,oldRightHeight=translated.scrollHeight;
+  const oldLeftTop=original.scrollTop,oldRightTop=translated.scrollTop;
+  const wasAbove=direction!=='prepend';
+  block.left.remove();block.right.remove();pageBlocks.delete(remove);
+  if(wasAbove){
+   setScrollWithoutFeedback(original,Math.max(0,oldLeftTop-(oldLeftHeight-original.scrollHeight)));
+   setScrollWithoutFeedback(translated,Math.max(0,oldRightTop-(oldRightHeight-translated.scrollHeight)));
   }
-  function yieldToUI() { return new Promise(r => setTimeout(r, 0)); }
-  function chunks(str, maxBytes = MAX_BYTES) {
-    const out=[]; let cur='';
-    for (const word of (str || '').trim().split(/\s+/u)) {
-      if (!word) continue;
-      if (encoder.encode(cur ? cur+' '+word : word).length <= maxBytes) { cur=cur?cur+' '+word:word; continue; }
-      if(cur) {out.push(cur);cur='';}
-      let part='';
-      for(const c of word) {
-        if(encoder.encode(part+c).length>maxBytes) {if(part)out.push(part);part='';}
-        part+=c;
-      }
-      cur=part;
-    }
-    if(cur)out.push(cur);
-    return out;
+ }
+}
+function insertPage(block,direction){
+ const empty=pageBlocks.size===0;
+ if(empty){original.replaceChildren();translated.replaceChildren();}
+ if(direction==='prepend'&&!empty){
+  // Retém o texto que estava visível quando adicionamos a página anterior.
+  const oldLeftHeight=original.scrollHeight,oldRightHeight=translated.scrollHeight;
+  const oldLeftTop=original.scrollTop,oldRightTop=translated.scrollTop;
+  original.prepend(block.left);translated.prepend(block.right);
+  setScrollWithoutFeedback(original,oldLeftTop+original.scrollHeight-oldLeftHeight);
+  setScrollWithoutFeedback(translated,oldRightTop+translated.scrollHeight-oldRightHeight);
+ }else{original.append(block.left);translated.append(block.right);}
+ pageBlocks.set(block.n,block);
+ trimPages(direction);
+}
+async function loadPage(n,direction='append',epoch=viewEpoch){
+ if(!pdf||opening||loading||n<1||n>totalPages||pageBlocks.has(n))return false;
+ loading=true;const tok=session;let page=null;
+ setStatus(`Carregando página ${n}/${totalPages}…`);
+ try{
+  page=await pdf.getPage(n);
+  const content=await page.getTextContent();
+  if(tok!==session||epoch!==viewEpoch)return false;
+  let texts=parseItems(content.items),mode='Texto';
+  if(!texts.length){
+   mode='OCR';setStatus(`Página ${n}: imagem digitalizada. Iniciando OCR…`);
+   texts=await recognize(page,n,tok,epoch);
   }
-  function textFromPage(items) {
-    const lines=[];
-    for(const item of items) {
-      const str=(item.str||'').trim();if(!str)continue;
-      const y=item.transform?.[5]??0,x=item.transform?.[4]??0;
-      const height=Math.max(6,Math.abs(item.height||item.transform?.[3]||11));
-      let line=lines.find(l=>Math.abs(l.y-y)<=2.2);
-      if(!line) {line={y,height,spans:[]};lines.push(line);}
-      line.spans.push({x,str});
-    }
-    lines.sort((a,b)=>b.y-a.y);
-    const ordered=lines.map(l=>({y:l.y,height:l.height,text:l.spans.sort((a,b)=>a.x-b.x).map(s=>s.str).join(' ').replace(/\s+/g,' ').trim()})).filter(l=>l.text);
-    if(!ordered.length)return [];
-    const paragraphs=[];let para=ordered[0].text;
-    for(let i=1;i<ordered.length;i++) {
-      const a=ordered[i-1],b=ordered[i];
-      if(Math.abs(a.y-b.y)>Math.max(15,a.height*1.55)) {paragraphs.push(para);para=b.text;}
-      else if(para.endsWith('-'))para=para.slice(0,-1)+b.text;
-      else para+=' '+b.text;
-    }
-    paragraphs.push(para);
-    return paragraphs.flatMap(p=>chunks(p));
+  if(tok!==session||epoch!==viewEpoch)return false;
+  const block=pageNodes(n,texts,mode);
+  insertPage(block,direction);
+  if(texts.length)translationQueue.push({block,epoch,tok});
+  else setStatus(`Página ${n}/${totalPages}: não foi possível reconhecer texto.`);
+  if(current===0){current=n;pageNum.value=String(n);navigation();}
+  void drainTranslationQueue();
+  return true;
+ }catch(err){
+  if(tok===session&&epoch===viewEpoch){
+   const block=pageNodes(n,[],'Erro');
+   block.left.append(el('p','failed',err.message||String(err)));
+   insertPage(block,direction);
+   setStatus(`Falha ao carregar página ${n}: ${err.message||String(err)}`);
   }
-  function textFromOCR(text) {
-    // Basic grouping of OCR lines and blank-line-separated paragraphs.
-    return (text||'').replace(/\r/g,'').split(/\n\s*\n/g).flatMap(p=>chunks(p));
+  return false;
+ }finally{
+  try{page?.cleanup()}catch{}
+  if(tok===session&&epoch===viewEpoch){
+   loading=false;
+   updateCurrentPage();
+   scheduleEdgeCheck();
   }
-  function initObserver() {
-    observer?.disconnect();
-    observer = new IntersectionObserver(entries=>{
-      if(!consent.checked)return;
-      for(const e of entries)if(e.isIntersecting)enqueue(+e.target.dataset.index);
-    },{root:original,rootMargin:'260px 0px 260px 0px',threshold:0});
-  }
-  function clearReading() {
-    generation++;
-    queued=[]; blocks=[]; pages=[];translated=0;
-    initObserver();
-    original.replaceChildren();translation.replaceChildren();
-    original.scrollTop=0;translation.scrollTop=0;
-  }
-  function setNavigation() {
-    nextButton.disabled=!doc || loadingPage || nextPageNumber>totalPages;
-    jumpButton.disabled=!doc || loadingPage;
-    pageInput.disabled=!doc || loadingPage;
-    pageInput.max=String(totalPages||1);
-    pageTotal.textContent=doc?`de ${totalPages}`:'de 0';
-  }
-  async function cleanupDoc() {
-    const old=doc;doc=null;
-    if(old)try{await old.destroy();}catch{}
-  }
-  async function openBytes(bytes,name) {
-    activeLoad++;
-    const load=activeLoad;
-    clearReading();await cleanupDoc();
-    filename=name;nextPageNumber=1;totalPages=0;loadingPage=false;
-    setNavigation();
-    if(!globalThis.pdfjsLib) {setStatus('Leitor PDF não carregou. Confira a conexão.');return;}
-    try {
-      setStatus('Abrindo PDF…');
-      pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
-      const opened=await pdfjsLib.getDocument({data:bytes}).promise;
-      if(load!==activeLoad) {await opened.destroy();return;}
-      doc=opened;totalPages=opened.numPages;
-      pageInput.value='1';setNavigation();
-      setStatus(`${name}: ${totalPages} páginas. Leitura e OCR sob demanda.`);
-      await loadNextPage();
-    } catch(err) {setStatus('Erro ao abrir o PDF: '+(err?.message||'arquivo inválido'));console.error(err);}
-  }
-  async function getOcrWorker(lang, currentLoad) {
-    if(!globalThis.Tesseract?.createWorker)throw new Error('Biblioteca OCR indisponível. Verifique a internet.');
-    if(ocrWorker&&ocrWorkerLang===lang)return ocrWorker;
-    if(ocrWorkerPromise&&ocrWorkerLang===lang)return ocrWorkerPromise;
-    if(ocrWorkerPromise) {try{await ocrWorkerPromise;}catch{}}
-    if(ocrWorker) {try{await ocrWorker.terminate();}catch{}ocrWorker=null;}
-    ocrWorkerLang=lang;
-    setStatus('Baixando modelo de reconhecimento '+lang+' (primeira vez pode demorar)…');
-    ocrWorkerPromise=Tesseract.createWorker(lang,1,{
-      logger:m=>{
-        if(currentLoad!==activeLoad)return;
-        if(m.status==='recognizing text')setStatus(`Reconhecendo imagem: ${Math.round((m.progress||0)*100)}% · página ${nextPageNumber-1}/${totalPages}`);
-      }
+ }
+}
+async function drainTranslationQueue(){
+ if(translating)return;
+ translating=true;
+ try{
+  while(translationQueue.length){
+   const task=translationQueue.shift();
+   if(task.tok!==session||task.epoch!==viewEpoch||!pageBlocks.has(task.block.n))continue;
+   let engine;
+   try{
+    engine=await createLocalTranslator(stage=>{
+     if(task.tok===session&&task.epoch===viewEpoch)setStatus('Tradutor local: '+stage);
     });
-    try {ocrWorker=await ocrWorkerPromise;return ocrWorker;}
-    catch(e){ocrWorkerLang='';throw e;}
-    finally{ocrWorkerPromise=null;}
-  }
-  async function ocrPage(page,p,currentLoad) {
-    const lang=OCR_LANG[source.value]||'spa';
-    const base=page.getViewport({scale:1});
-    // Keep the canvas below 2.8 megapixels to reduce iPhone memory consumption.
-    const scale=Math.min(2.2,Math.sqrt(2800000/(base.width*base.height)));
-    const viewport=page.getViewport({scale});
-    const canvas=document.createElement('canvas');
-    canvas.width=Math.round(viewport.width);canvas.height=Math.round(viewport.height);
-    const ctx=canvas.getContext('2d',{alpha:false,willReadFrequently:true});
-    if(!ctx)throw new Error('O aparelho não conseguiu criar a imagem para OCR.');
-    try {
-      setStatus(`Página ${p}/${totalPages}: preparando imagem para OCR…`);
-      await page.render({canvasContext:ctx,viewport}).promise;
-      if(currentLoad!==activeLoad)return [];
-      const worker=await getOcrWorker(lang,currentLoad);
-      if(currentLoad!==activeLoad)return [];
-      setStatus(`Página ${p}/${totalPages}: reconhecendo texto da imagem…`);
-      const ret=await worker.recognize(canvas);
-      return textFromOCR(ret?.data?.text);
-    } finally {canvas.width=0;canvas.height=0;}
-  }
-  function addPage(p,texts,mode,error) {
-    const group={number:p,left:[],right:[],indexes:[]};
-    const leftMark=make('div','page-mark',`PÁGINA ${p}${mode==='ocr'?' · OCR':''}`);
-    const rightMark=make('div','page-mark',`PÁGINA ${p}`);
-    original.append(leftMark);translation.append(rightMark);
-    group.left.push(leftMark);group.right.push(rightMark);
-    if(!texts.length) {
-      const msg=error?'Erro no reconhecimento: '+error:'Nenhum texto encontrado nesta página. Use Próxima página para continuar.';
-      const a=make('p','empty',msg),b=make('p','empty','Sem texto para traduzir nesta página.');
-      original.append(a);translation.append(b);
-      group.left.push(a);group.right.push(b);
-    }
-    for(const t of texts) {
-      const id=blocks.length;
-      const left=make('p','segment',t),right=make('p','segment pending','Aguardando tradução…');
-      left.dataset.index=String(id);right.dataset.index=String(id);
-      original.append(left);translation.append(right);
-      group.left.push(left);group.right.push(right);group.indexes.push(id);
-      blocks.push({text:t,left,right,state:'idle'});
-      observer.observe(left);
-    }
-    pages.push(group);
-    // Drop old DOM pages to keep very long PDFs usable on phones.
-    while(pages.length>KEEP_PAGES) {
-      const old=pages.shift();
-      const beforeL=original.scrollHeight,beforeR=translation.scrollHeight;
-      old.indexes.forEach(i=>{const b=blocks[i];if(b){observer.unobserve(b.left);b.state='discarded';blocks[i]=null;}});
-      old.left.forEach(n=>n.remove());old.right.forEach(n=>n.remove());
-      original.scrollTop=Math.max(0,original.scrollTop-(beforeL-original.scrollHeight));
-      translation.scrollTop=Math.max(0,translation.scrollTop-(beforeR-translation.scrollHeight));
-    }
-  }
-  async function loadNextPage() {
-    if(!doc||loadingPage||nextPageNumber>totalPages)return;
-    const pdf=doc, token=activeLoad, n=nextPageNumber++;
-    loadingPage=true;setNavigation();
-    let page=null, mode='texto', texts=[],error='';
-    try {
-      setStatus(`${filename}: lendo página ${n} de ${totalPages}…`);
-      page=await pdf.getPage(n);
-      const content=await page.getTextContent();
-      if(token!==activeLoad)return;
-      texts=textFromPage(content.items);
-      if(!texts.length){mode='ocr';texts=await ocrPage(page,n,token);}
-      if(token!==activeLoad)return;
-    } catch(err) {error=err?.message||String(err);console.error('Falha ao carregar página',n,err);}
-    finally {page?.cleanup();loadingPage=false;setNavigation();}
-    if(token!==activeLoad)return;
-    addPage(n,texts,mode,error);
-    pageInput.value=String(n);
-    setStatus(error?`Página ${n}/${totalPages}: ${error}`:`Página ${n}/${totalPages} · ${texts.length} trecho(s) · ${mode==='ocr'?'texto reconhecido por OCR':'texto extraído'}. Role para traduzir ou avançar.`);
-    if(consent.checked)translateVisible();
-  }
-  async function jumpToPage() {
-    if(!doc||loadingPage)return;
-    const n=Number(pageInput.value);
-    if(!Number.isInteger(n)||n<1||n>totalPages){setStatus(`Informe uma página entre 1 e ${totalPages}.`);return;}
-    clearReading();nextPageNumber=n;setNavigation();await loadNextPage();
-  }
-  function hash(s){let h=2166136261;for(let i=0;i<s.length;i++)h=Math.imul(h^s.charCodeAt(i),16777619);return(h>>>0).toString(36)+'-'+s.length;}
-  async function getTranslation(text,src,dst) {
-    if(src===dst)return text;
-    const key=`${src}|${dst}|${text}`;
-    if(memoryCache.has(key))return memoryCache.get(key);
-    try{const cached=localStorage.getItem('lb:'+hash(key));if(cached){memoryCache.set(key,cached);return cached;}}catch{}
-    const qs=new URLSearchParams({q:text,langpair:`${src}|${dst}`});
-    const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),16000);
+   }catch(err){
+    if(task.tok!==session||task.epoch!==viewEpoch)continue;
+    for(const p of task.block.outputs){setTranslatedText(p,'Tradutor local não carregou.','segment failed');}
+    setStatus('Bergamot indisponível: '+(err?.message||String(err)));
+    continue;
+   }
+   for(let i=0;i<task.block.texts.length;i++){
+    if(task.tok!==session||task.epoch!==viewEpoch||!pageBlocks.has(task.block.n))break;
+    const p=task.block.outputs[i],text=task.block.texts[i],key='es-pt:'+text;
     try{
-      const response=await fetch('https://api.mymemory.translated.net/get?'+qs,{signal:controller.signal});
-      if(!response.ok)throw new Error('serviço indisponível ('+response.status+')');
-      const payload=await response.json();
-      if(+payload.responseStatus!==200||!payload.responseData?.translatedText||payload.quotaFinished)
-        throw new Error(payload.responseDetails||'limite diário atingido ou idioma não atendido');
-      const decoded=document.createElement('textarea');decoded.innerHTML=payload.responseData.translatedText;
-      const translatedText=decoded.value;
-      memoryCache.set(key,translatedText);
-      try{if(text.length<400)localStorage.setItem('lb:'+hash(key),translatedText);}catch{}
-      return translatedText;
-    } finally{clearTimeout(timer);}
+     setTranslatedText(p,'Traduzindo localmente…');
+     let result=translationCache.get(key);
+     if(!result){
+      result=await engine.translate(text);
+      translationCache.set(key,result);
+      if(translationCache.size>250)translationCache.delete(translationCache.keys().next().value);
+     }
+     if(task.tok!==session||task.epoch!==viewEpoch||!pageBlocks.has(task.block.n))break;
+     setTranslatedText(p,result,'segment');
+     setStatus(`Página ${task.block.n}/${totalPages}: ${i+1}/${task.block.texts.length} trechos traduzidos · sem MyMemory`);
+    }catch(err){
+     if(task.tok!==session||task.epoch!==viewEpoch)break;
+     setTranslatedText(p,'Erro de tradução local: '+(err?.message||String(err)),'segment failed');setStatus('O tradutor local falhou. Não foi usado serviço remoto.');
+     break;
+    }
+    await new Promise(r=>setTimeout(r,0));
+   }
   }
-  function enqueue(id) {
-    const b=blocks[id];
-    if(!b||b.state!=='idle'||!consent.checked)return;
-    b.state='queued';queued.push({id,generation});drain();
-  }
-  async function drain() {
-    if(running)return;
-    running=true;
-    try{
-      while(queued.length&&consent.checked) {
-        const job=queued.shift();if(job.generation!==generation)continue;
-        const b=blocks[job.id];if(!b||b.state!=='queued')continue;
-        b.state='working';b.right.textContent='Traduzindo…';
-        const src=source.value,dst=target.value;
-        try{
-          const result=await getTranslation(b.text,src,dst);
-          if(job.generation!==generation||src!==source.value||dst!==target.value||!b.right.isConnected)continue;
-          b.right.textContent=result;b.right.classList.remove('pending','failed');b.state='done';translated++;
-        }catch(err){
-          if(job.generation!==generation||!b.right.isConnected)continue;
-          b.right.textContent='Tradução indisponível: '+(err?.message||'erro de conexão');
-          b.right.classList.remove('pending');b.right.classList.add('failed');b.state='failed';
-          setStatus('Alguns trechos não foram traduzidos. Verifique a internet ou limite gratuito.');
-        }
-        await new Promise(r=>setTimeout(r,90));
-      }
-    } finally {running=false;if(queued.length&&consent.checked)setTimeout(drain,0);}
-  }
-  function translateVisible() {
-    if(!consent.checked)return;
-    const top=original.scrollTop-400,bottom=original.scrollTop+original.clientHeight+400;
-    for(const b of blocks)if(b&&b.left.isConnected&&b.left.offsetTop+b.left.offsetHeight>=top&&b.left.offsetTop<=bottom)enqueue(+b.left.dataset.index);
-  }
-  function onLanguageChange() {
-    generation++;queued=[];translated=0;
-    for(const b of blocks)if(b){b.state='idle';b.right.textContent='Aguardando tradução…';b.right.classList.remove('failed');b.right.classList.add('pending');}
-    if(consent.checked)translateVisible();
-    setStatus('Idioma atualizado. O OCR das próximas páginas usará o idioma de origem escolhido.');
-  }
-  function onScroll(from,to) {
-    let scrollTimer;
-    from.addEventListener('scroll',()=>{
-      if(ignoredScroll)return;
-      const list=from.querySelectorAll('p.segment');
-      if(list.length) {
-        const pos=from.scrollTop,children=Array.from(list);
-        let chosen=children[0];for(const n of children){if(n.offsetTop<=pos+30)chosen=n;else break;}
-        const other=to.querySelector(`p.segment[data-index="${chosen.dataset.index}"]`);
-        if(other){
-          const ratio=Math.max(0,Math.min(1,(pos-chosen.offsetTop)/Math.max(1,chosen.offsetHeight)));
-          ignoredScroll=true;to.scrollTop=other.offsetTop+ratio*other.offsetHeight;
-          setTimeout(()=>{ignoredScroll=false;},60);
-        }
-      }
-      translateVisible();
-      // Only load the next PDF page after a real scroll, not automatically at startup.
-      clearTimeout(scrollTimer);
-      scrollTimer=setTimeout(()=>{
-        if(from.scrollTop>25 && from.scrollTop+from.clientHeight>=from.scrollHeight-100 && !loadingPage)loadNextPage();
-      },130);
-    },{passive:true});
-  }
-  input.addEventListener('change',async()=>{
-    const file=input.files?.[0];if(!file)return;
-    if(!/\.pdf$/i.test(file.name)&&file.type!=='application/pdf'){setStatus('Selecione um arquivo PDF.');return;}
-    await openBytes(await file.arrayBuffer(),file.name);
-  });
-  sample.addEventListener('click',async()=>{
-    try {const response=await fetch('./exemplo.pdf');if(!response.ok)throw new Error('HTTP '+response.status);
-      await openBytes(await response.arrayBuffer(),'exemplo.pdf');}
-    catch(err){setStatus('Não foi possível abrir o PDF de exemplo: '+err.message);}
-  });
-  nextButton.addEventListener('click',loadNextPage);
-  jumpButton.addEventListener('click',jumpToPage);
-  pageInput.addEventListener('keydown',event=>{if(event.key==='Enter')jumpToPage();});
-  source.addEventListener('change',onLanguageChange);
-  target.addEventListener('change',onLanguageChange);
-  consent.addEventListener('change',()=>{
-    if(consent.checked){translateVisible();setStatus('Tradução ativada; os trechos visíveis serão enviados ao MyMemory.');}
-    else{queued=[];setStatus('Tradução pausada. O reconhecimento OCR continua local no aparelho.');}
-  });
-  onScroll(original,translation);onScroll(translation,original);
-  initObserver();setNavigation();
-  if('serviceWorker' in navigator&&location.protocol.startsWith('http'))
-    window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(()=>{}));
-})();
+ }finally{translating=false;}
+}
+async function openFile(file){
+ const tok=++session;viewEpoch++;
+ opening=true;loading=false;
+ resetText();pdf&&setStatus('Substituindo PDF anterior…');
+ if(pdf){try{await pdf.destroy()}catch{}pdf=null;}
+ current=0;totalPages=0;navigation();setStatus('Abrindo '+file.name+'…');
+ try{
+  if(!globalThis.pdfjsLib)throw new Error('PDF.js não carregou: confira a conexão.');
+  pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  const data=new Uint8Array(await file.arrayBuffer());
+  const doc=await pdfjsLib.getDocument({data}).promise;
+  if(tok!==session){await doc.destroy();return;}
+  pdf=doc;totalPages=doc.numPages;current=1;pageNum.value='1';opening=false;navigation();
+  await loadPage(1,'append',viewEpoch);
+ }catch(err){
+  if(tok===session){opening=false;navigation();setStatus('Não foi possível abrir: '+(err.message||String(err)));}
+ }
+}
+async function jumpToPage(n){
+ if(!pdf||opening||!Number.isInteger(n)||n<1||n>totalPages)return;
+ ++viewEpoch;loading=false;
+ resetText();current=n;pageNum.value=String(n);navigation();
+ await loadPage(n,'append',viewEpoch);
+}
+fileEl.addEventListener('change',e=>{const f=e.target.files?.[0];if(f)void openFile(f);});
+btnNext.onclick=()=>void jumpToPage(current+1);
+btnPrev.onclick=()=>void jumpToPage(current-1);
+btnGo.onclick=()=>void jumpToPage(Number(pageNum.value));
+$('testEngine').onclick=async()=>{
+ const button=$('testEngine'),label=$('teststatus');button.disabled=true;
+ const progress=stage=>{label.textContent='Diagnóstico: '+stage;setStatus('Bergamot: '+stage);};
+ progress('iniciando teste espanhol → português…');
+ try{
+  const engine=await createLocalTranslator(progress);
+  progress('Biblioteca carregada; baixando modelos e traduzindo a frase…');
+  const result=await engine.translate('La arquitectura y el urbanismo estudian las ciudades.');
+  label.textContent='Tradução concluída: '+result;
+  setStatus('Bergamot respondeu ao teste. Agora podemos avaliar a tradução do PDF.');
+ }catch(e){
+  label.textContent='Falha no teste Bergamot: '+(e?.message||String(e));
+  setStatus('Bergamot não completou o teste; a versão 2 continua independente.');
+ }finally{button.disabled=false;}
+};
+// Sincronização unidirecional: somente a coluna escolhida por um gesto
+// pode mover a outra. Assim a tradução chegando de forma assíncrona não
+// aciona um scroll de volta, causando saltos ou movimento involuntário.
+let edgeScheduled=false;
+function alignPanes(from,to){
+ if(!pageBlocks.size)return;
+ const nums=sortedPages();let chosen=nums[0];
+ const point=from.scrollTop+14;
+ for(const n of nums){
+  const block=pageBlocks.get(n),node=from===original?block.left:block.right;
+  if(node.offsetTop<=point)chosen=n;else break;
+ }
+ const block=pageBlocks.get(chosen);
+ const src=from===original?block.left:block.right;
+ const dest=to===original?block.left:block.right;
+ const fraction=Math.min(1,Math.max(0,(point-src.offsetTop)/Math.max(1,src.offsetHeight)));
+ const target=Math.max(0,dest.offsetTop+dest.offsetHeight*fraction-14);
+ setScrollWithoutFeedback(to,target);
+}
+// Alterna apenas o layout, sem recarregar PDF, OCR ou tradução.
+// A página e o progresso visível no painel ativo são guardados antes do reflow.
+function viewportReadingAnchor(p){
+ if(!pageBlocks.size)return null;
+ const inset=Math.min(80,Math.max(18,p.clientHeight*.15));
+ const point=p.scrollTop+inset;
+ const nums=sortedPages();let chosen=nums[0];
+ for(const n of nums){
+  const b=pageBlocks.get(n),node=p===original?b.left:b.right;
+  if(node.offsetTop<=point)chosen=n;else break;
+ }
+ const b=pageBlocks.get(chosen),node=p===original?b.left:b.right;
+ return {page:chosen,fraction:Math.max(0,Math.min(1,(point-node.offsetTop)/Math.max(1,node.offsetHeight))),inset};
+}
+function switchViewMode(mode){
+ const source=activePane,anchor=viewportReadingAnchor(source);
+ $('panes').classList.toggle('mode-stacked',mode==='stacked');
+ if(anchor){
+  const block=pageBlocks.get(anchor.page);
+  const node=source===original?block.left:block.right;
+  const desired=node.offsetTop+node.offsetHeight*anchor.fraction-anchor.inset;
+  setScrollWithoutFeedback(source,desired);
+  alignPanes(source,source===original?translated:original);
+  updateCurrentPage();
+ }
+ try{localStorage.setItem('leitor-bilingue-v36-view-mode',mode)}catch{}
+}
+const modeSelect=$('viewMode');
+try{
+ const saved=localStorage.getItem('leitor-bilingue-v36-view-mode');
+ if(saved==='stacked')modeSelect.value='stacked';
+}catch{}
+$('panes').classList.toggle('mode-stacked',modeSelect.value==='stacked');
+modeSelect.addEventListener('change',()=>switchViewMode(modeSelect.value));
+function updateCurrentPage(){
+ if(!pageBlocks.size)return;
+ const p=activePane,pt=p.scrollTop+Math.min(p.clientHeight*.24,110);
+ let visible=sortedPages()[0];
+ for(const n of sortedPages()){
+  const node=p===original?pageBlocks.get(n).left:pageBlocks.get(n).right;
+  if(node.offsetTop<=pt)visible=n;else break;
+ }
+ if(current!==visible){current=visible;if(document.activeElement!==pageNum)pageNum.value=String(visible);navigation();}
+}
+function scheduleEdgeCheck(){
+ if(edgeScheduled)return;
+ edgeScheduled=true;
+ requestAnimationFrame(()=>{edgeScheduled=false;void maybeLoadMore();});
+}
+async function maybeLoadMore(){
+ if(!pdf||opening||loading||!pageBlocks.size)return;
+ const p=activePane,nums=sortedPages();
+ const bottomGap=p.scrollHeight-p.scrollTop-p.clientHeight;
+ const topGap=p.scrollTop;
+ if(bottomGap<EDGE&&nums[nums.length-1]<totalPages&&(autoLoadArmed||initialFillCount<2)){
+  if(!autoLoadArmed)initialFillCount++;
+  autoLoadArmed=false;
+  await loadPage(nums[nums.length-1]+1,'append',viewEpoch);
+ }else if(topGap<EDGE&&nums[0]>1&&autoLoadArmed){
+  autoLoadArmed=false;
+  await loadPage(nums[0]-1,'prepend',viewEpoch);
+ }
+}
+function bindScroll(p,other){
+ const select=()=>{activePane=p;};
+ const scrollingGesture=()=>{select();autoLoadArmed=true;scheduleEdgeCheck();};
+ p.addEventListener('touchstart',select,{passive:true});
+ p.addEventListener('touchmove',scrollingGesture,{passive:true});
+ p.addEventListener('wheel',scrollingGesture,{passive:true});
+ p.addEventListener('pointerdown',select,{passive:true});
+ p.addEventListener('keydown',select);
+ p.addEventListener('scroll',()=>{
+  if(consumeSilentScroll(p))return;
+  if(p!==activePane)return;
+  alignPanes(p,other);
+  updateCurrentPage();scheduleEdgeCheck();
+ },{passive:true});
+}
+bindScroll(original,translated);bindScroll(translated,original);
+navigation();
