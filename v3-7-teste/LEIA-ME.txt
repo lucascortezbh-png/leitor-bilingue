@@ -1,0 +1,29 @@
+LEITOR BILÍNGUE V3.7 — ASSINATURA "por Lucas Rafael"
+
+Atualização experimental sobre a V3.6: acrescenta somente uma assinatura discreta no rodapé.
+A V3.6 continua intacta em /v3-6-teste/.
+
+RECURSOS PRESERVADOS
+- Visualização lado a lado ou empilhada (espanhol acima; português abaixo).
+- Rolagem contínua e sincronização das colunas.
+- OCR, PDF.js e tradução local com Bergamot.
+- Preferência de visualização salva no navegador.
+
+COMO PUBLICAR O TESTE
+1. Extraia o ZIP no computador.
+2. No repositório GitHub 'leitor-bilingue', escolha Adicionar arquivo > Carregar arquivos.
+3. Envie a pasta COMPLETA 'v3-7-teste', incluindo index.html, app.js, engine.js e sw-local.js.
+4. Confira se os arquivos aparecem sob v3-7-teste/ e confirme.
+5. Abra no Safari/Chrome:
+   https://lucascortezbh-png.github.io/leitor-bilingue/v3-7-teste/
+6. Confirme a assinatura no rodapé, as duas visualizações e a tradução do seu PDF.
+
+IMPORTANTE
+- Não substitua nem exclua /v3-teste/ nem /v3-6-teste/.
+- O Bergamot é reutilizado de /v3-teste/vendor/ no mesmo repositório.
+- O URL do teste só funcionará quando o GitHub Pages publicar a nova pasta.
+- Este ZIP não instala nem publica nada automaticamente.
+
+DEPOIS DO TESTE
+Se a V3.7 funcionar corretamente no Safari, podemos copiar o rodapé para a
+versão publicada em /v3-6-teste/, mantendo o mesmo link usado pelos colegas.
