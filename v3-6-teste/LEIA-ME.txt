@@ -1,0 +1,31 @@
+LEITOR BILÍNGUE V3.6 — ALTERNAR VISUALIZAÇÃO (LADO A LADO / EMPILHADO)
+
+A V3.6 é um teste separado: não sobrescreve a V3.5 em v3-teste.
+
+NOVIDADE
+- Campo “Visualização” na barra superior: “Lado a lado” (atual) ou
+  “Em cima/embaixo” (espanhol acima e português abaixo).
+- Alternância durante a leitura, sem reabrir o PDF, mantendo aproximadamente a
+  mesma posição e preservando a tradução/rolagem sincronizada da V3.5.
+- Preferência de visualização salva neste navegador, quando permitido.
+
+INSTALAÇÃO SEM PERDER A V3.5
+1. Extraia este ZIP. A pasta se chama v3-6-teste (diferente de v3-teste).
+2. Abra o repositório leitor-bilingue no GitHub.
+3. Use Adicionar arquivo > Carregar arquivos, envie a pasta INTEIRA v3-6-teste.
+4. Verifique os caminhos v3-6-teste/index.html e v3-6-teste/app.js.
+5. Confirme; NÃO substitua, renomeie ou apague a pasta v3-teste.
+6. Abra a versão experimental em:
+   https://SEU-USUARIO.github.io/leitor-bilingue/v3-6-teste/
+   (use seu endereço atual e troque somente a parte final /v3-teste/ por /v3-6-teste/).
+7. Primeiro teste o seletor de visualização com o PDF e depois a rolagem.
+
+IMPORTANTE: o motor Bergamot é reutilizado de /v3-teste/vendor/.
+Se a pasta v3-teste/vendor deixar de existir, a tradução da V3.6 falhará.
+A V2 na raiz e a V3.5 em /v3-teste/ não são alteradas por este ZIP.
+
+TESTES
+- Troque entre os modos nas páginas 19 a 21, procurando saltos involuntários.
+- Teste a rolagem original e tradução, sem tocar na tela após a rolagem.
+- Teste no Safari do iPhone. A verificação de navegador de desktop é preliminar,
+  não substitui teste real no Safari/iPhone.
