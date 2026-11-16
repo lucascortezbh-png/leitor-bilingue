@@ -1,0 +1,10 @@
+Leitor Bilíngue V3.10 — teste de tradução por frases
+
+- Envie somente a pasta v3-10-teste completa para a raiz do repositório GitHub.
+- Não exclua v3-teste: o motor Bergamot continua em v3-teste/vendor.
+- Não substitua a V3.9 nem a página principal.
+- Abrir: https://lucascortezbh-png.github.io/leitor-bilingue/v3-10-teste/
+- Depois de abrir o PDF, vá à página 135. Compare o início das frases.
+- Se notar omissões, toque em "Revisar tradução": a página será retraduzida em trechos menores SEM refazer o OCR.
+- As traduções podem continuar apresentando erros de sentido ou omissões: nunca são garantidamente fiéis.
+- A versão nova foi verificada por sintaxe e testes de interface simulada, mas não testada com o modelo Bergamot real no Safari.
