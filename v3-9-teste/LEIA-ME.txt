@@ -1,0 +1,29 @@
+LEITOR BILÍNGUE V3.9 — TESTE DE OCR
+
+Objetivo: reprocessar páginas digitalizadas com figuras e tabelas sem trocar o motor Bergamot.
+
+PUBLICAÇÃO SEM ALTERAR O APLICATIVO PRINCIPAL
+1. No GitHub, na raiz do repositório leitor-bilingue, use "Adicionar arquivo > Carregar arquivos".
+2. Arraste a pasta v3-9-teste INTEIRA.
+3. Confira v3-9-teste/index.html e confirme as alterações.
+4. Abra: https://lucascortezbh-png.github.io/leitor-bilingue/v3-9-teste/
+5. Não apague a pasta v3-teste/vendor. Ela contém o tradutor que já funciona.
+
+NOVO MENU DE OCR
+- Revisar OCR: refaz o texto da página mostrada (não muda outras páginas).
+- Modo Automático: tenta localizar foto colorida e ler o texto em ordem por regiões.
+- Modo Por regiões: se não encontrar figura, divide o texto em faixas nos espaços em branco.
+- Modo Alta precisão: usa mais pixels para reconhecimento; pode ser lento no iPhone.
+- Marcar figura: permite desenhar um retângulo ao redor de uma foto/diagrama que está confundindo o OCR; depois de marcar, processa outra vez sem reconhecer a área da foto.
+
+TESTES INDICADOS
+- Abra seu PDF de 364 páginas e vá à página 132, usando "Revisar OCR" no notebook e no iPhone.
+- Compare o texto da Figura 5.2 e do parágrafo à direita com o PDF original.
+- Vá à página 134 e teste Auto, Por regiões e Alta precisão. Se houver figura, experimente "Marcar figura".
+- Verifique sincronização, rolagem contínua e seleção dos modos lado a lado/empilhado.
+
+LIMITAÇÕES
+OCR não garante fidelidade literal, sobretudo em páginas inclinadas, de baixa resolução, com fotografias p&b, fórmulas e legendas. Não inventa texto deliberadamente. Se faltar ou estiver incorreto, confira o PDF original.
+Bibliotecas PDF.js e Tesseract.js são carregadas por CDN; o motor Bergamot usa os arquivos já publicados em ../v3-teste/vendor/.
+
+por Lucas Rafael
